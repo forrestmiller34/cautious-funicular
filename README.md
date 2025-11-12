@@ -21,6 +21,10 @@ nba_ingest/
 │   └── api.py
 ├── models/
 │   └── win_prob_model.pkl  (created after training)
+│   └── win_prob_model.py
+├── models/
+│   └── win_prob_model.pkl  (created after training)
+│   └── ingest.py
 ├── requirements.txt
 └── .env
 ```
