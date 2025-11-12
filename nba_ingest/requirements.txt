@@ -1,0 +1,7 @@
+requests
+SQLAlchemy
+psycopg2-binary
+python-dotenv
+pandas
+scikit-learn
+joblib
