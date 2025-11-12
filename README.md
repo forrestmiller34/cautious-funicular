@@ -18,6 +18,7 @@ nba_ingest/
 │   └── win_prob_model.py
 ├── models/
 │   └── win_prob_model.pkl  (created after training)
+│   └── ingest.py
 ├── requirements.txt
 └── .env
 ```
