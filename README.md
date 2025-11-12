@@ -12,6 +12,12 @@ nba_ingest/
 │   ├── db.py
 │   ├── models.py
 │   ├── balldontlie_client.py
+│   ├── ingest.py
+│   ├── features.py
+│   ├── train_model.py
+│   └── win_prob_model.py
+├── models/
+│   └── win_prob_model.pkl  (created after training)
 │   └── ingest.py
 ├── requirements.txt
 └── .env
@@ -61,3 +67,29 @@ The ingestion process populates the following tables:
 - **`nba_player_advanced_stats`** – Holds player-level advanced metrics for every game, such as PIE, offensive/defensive ratings, usage percentage, and more.
 
 These tables form the foundation for future analytics, including win probability modeling and betting insights.
+
+## Phase 2 – Win Probability Model
+
+With the ingestion pipeline in place, the project now includes utilities for training and using a pre-game home-team win probability model.
+
+1. **Ensure data is ingested**
+
+   Run the ingestion script (see above) so the latest games and advanced stats are available in the database.
+
+2. **Train the model**
+
+   ```bash
+   python -m nba_ingest.train_model
+   ```
+
+   The script pulls historical features from the database, trains a logistic regression model, prints evaluation metrics (accuracy, ROC AUC, Brier score), and saves the fitted pipeline to `models/win_prob_model.pkl`.
+
+3. **Generate a prediction for a matchup**
+
+   ```bash
+   python -m nba_ingest.win_prob_model --home_team_id=14 --visitor_team_id=20 --date=2024-12-15
+   ```
+
+   This command loads the saved model, assembles features for the specified matchup/date, and prints the predicted probability that the home team wins.
+
+The model currently focuses on pre-game home win probability using season-long trends, recent team form, and rest days derived from the ingested advanced statistics. Later phases will integrate betting odds and power a public-facing API.
