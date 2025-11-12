@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence
 
 import requests
 
@@ -86,6 +86,18 @@ class BallDontLieClient:
         if postseason is not None:
             params["postseason"] = str(postseason).lower()
         yield from self._paginate("/v1/stats/advanced", params)
+
+    def list_odds_by_date(self, date: str) -> List[Dict[str, object]]:
+        """Retrieve odds for the specified date (YYYY-MM-DD)."""
+        params: Dict[str, object] = {"dates[]": date, "per_page": 100}
+        return list(self._paginate("/v2/odds", params))
+
+    def list_odds_by_game_ids(self, game_ids: Sequence[int]) -> List[Dict[str, object]]:
+        """Retrieve odds for the specified collection of game IDs."""
+        params: Dict[str, object] = {"per_page": 100}
+        if game_ids:
+            params["game_ids[]"] = list(game_ids)
+        return list(self._paginate("/v2/odds", params))
 
 
 __all__ = ["BallDontLieClient"]

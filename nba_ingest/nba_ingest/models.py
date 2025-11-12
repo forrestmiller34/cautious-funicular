@@ -84,6 +84,11 @@ class NBAGame(Base):
         back_populates="game",
         cascade="all, delete-orphan",
     )
+    odds = relationship(
+        "NBAGameOdds",
+        back_populates="game",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_nba_games_season_date", "season", "date"),
@@ -125,4 +130,33 @@ class NBAPlayerAdvancedStats(Base):
     )
 
 
-__all__ = ["Base", "NBATeam", "NBAGame", "NBAPlayerAdvancedStats"]
+class NBAGameOdds(Base):
+    __tablename__ = "nba_game_odds"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    game_id = Column(BigInteger, ForeignKey("nba_games.id"), nullable=False, index=True)
+    vendor = Column(String(50), nullable=False)
+    line_type = Column(String(20), nullable=False)
+    home_team_price = Column(Integer)
+    away_team_price = Column(Integer)
+    spread_points = Column(Float)
+    total_points = Column(Float)
+    over_price = Column(Integer)
+    under_price = Column(Integer)
+    last_update = Column(DateTime(timezone=True), nullable=False)
+
+    game = relationship("NBAGame", back_populates="odds")
+
+    __table_args__ = (
+        Index("ix_nba_game_odds_game_vendor_type", "game_id", "vendor", "line_type"),
+        Index("ix_nba_game_odds_game_type", "game_id", "line_type"),
+    )
+
+
+__all__ = [
+    "Base",
+    "NBATeam",
+    "NBAGame",
+    "NBAPlayerAdvancedStats",
+    "NBAGameOdds",
+]

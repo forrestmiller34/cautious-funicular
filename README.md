@@ -15,6 +15,12 @@ nba_ingest/
 │   ├── ingest.py
 │   ├── features.py
 │   ├── train_model.py
+│   ├── win_prob_model.py
+│   ├── odds_math.py
+│   ├── odds_ingest.py
+│   └── api.py
+├── models/
+│   └── win_prob_model.pkl  (created after training)
 │   └── win_prob_model.py
 ├── models/
 │   └── win_prob_model.pkl  (created after training)
@@ -65,6 +71,7 @@ The ingestion process populates the following tables:
 - **`nba_teams`** – Stores team metadata (name, city, conference, division).
 - **`nba_games`** – Contains detailed per-game information, including quarter scoring, timeouts, and bonus indicators for each team.
 - **`nba_player_advanced_stats`** – Holds player-level advanced metrics for every game, such as PIE, offensive/defensive ratings, usage percentage, and more.
+- **`nba_game_odds`** – Stores sportsbook moneyline, spread, and total prices for each game, keyed by vendor and market type.
 
 These tables form the foundation for future analytics, including win probability modeling and betting insights.
 
@@ -93,3 +100,51 @@ With the ingestion pipeline in place, the project now includes utilities for tra
    This command loads the saved model, assembles features for the specified matchup/date, and prints the predicted probability that the home team wins.
 
 The model currently focuses on pre-game home win probability using season-long trends, recent team form, and rest days derived from the ingested advanced statistics. Later phases will integrate betting odds and power a public-facing API.
+
+## Phase 3 – API and Odds
+
+Phase 3 extends the project with betting odds ingestion, pricing math helpers, and a FastAPI backend that surfaces the win probability model alongside market information.
+
+1. **Install updated dependencies**
+
+   Additional libraries (`fastapi`, `uvicorn[standard]`) have been added to `nba_ingest/requirements.txt`. Re-run the installation step if you installed dependencies before this phase.
+
+2. **(Optional) Cache daily odds data**
+
+   ```bash
+   python -m nba_ingest.odds_ingest --date=2024-12-25
+   ```
+
+   The command fetches odds for the supplied date (defaults to today), normalizes sportsbook payloads, and upserts rows into `nba_game_odds`.
+
+3. **Run the API**
+
+   ```bash
+   uvicorn nba_ingest.api:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+   The API expects `BALDONTLIE_API_KEY`, `DATABASE_URL`, and `NBA_SEASONS` (for model feature generation) to be present in your environment or `.env` file. It lazily loads the trained model from `models/win_prob_model.pkl`; if the file is missing the win probability fields will be `null` until the model is trained.
+
+4. **Available endpoints**
+
+   - `GET /health` – Simple status probe returning `{ "status": "ok" }`.
+   - `GET /games?date=YYYY-MM-DD` – Returns the day’s games with team info, home win probability from the model, all cached sportsbook markets, and the best available moneyline price for each side. If cached odds are stale or missing, the API will fetch fresh odds from Ball Don't Lie and update the database before responding.
+   - `POST /parlay/estimate` – Accepts a list of parlay legs (with American odds), computes combined hit probability, fair odds, and expected value when offered odds are supplied.
+
+   Example request for a parlay estimate:
+
+   ```bash
+   curl -X POST \
+     -H "Content-Type: application/json" \
+     -d '{
+           "legs": [
+             {"game_id": 1234, "line_type": "moneyline", "side": "home", "american_odds": -125},
+             {"game_id": 5678, "line_type": "moneyline", "side": "away", "american_odds": +140}
+           ],
+           "stake": 10,
+           "parlay_offered_american_odds": +350
+         }' \
+     http://localhost:8000/parlay/estimate
+   ```
+
+These additions prepare the project for integrating sportsbook lines with the statistical model and lay the groundwork for future betting tools.

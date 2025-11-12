@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from .balldontlie_client import BallDontLieClient
 from .config import load_settings
 from .db import create_db_engine, create_session_factory, get_session
-from .models import Base, NBAGame, NBAPlayerAdvancedStats, NBATeam
+from .models import Base, NBAGame, NBAPlayerAdvancedStats, NBAGameOdds, NBATeam
 
 
 DATE_FORMAT = "%Y-%m-%d"
@@ -155,6 +155,7 @@ def summarize_counts(session) -> Dict[str, int]:
         "teams": session.execute(select(func.count()).select_from(NBATeam)).scalar_one(),
         "games": session.execute(select(func.count()).select_from(NBAGame)).scalar_one(),
         "advanced_stats": session.execute(select(func.count()).select_from(NBAPlayerAdvancedStats)).scalar_one(),
+        "odds": session.execute(select(func.count()).select_from(NBAGameOdds)).scalar_one(),
     }
 
 
@@ -178,7 +179,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     print("Ingestion complete.")
     print(
-        "Database totals → Teams: {teams}, Games: {games}, Advanced Stats: {advanced_stats}".format(
+        "Database totals → Teams: {teams}, Games: {games}, Advanced Stats: {advanced_stats}, Odds Rows: {odds}".format(
             **counts
         )
     )
