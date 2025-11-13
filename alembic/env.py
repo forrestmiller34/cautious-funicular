@@ -6,6 +6,7 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from nba_ingest.nba_ingest.models import Base
 from nba_ingest.props_models import PropsBase
 
 
@@ -17,6 +18,7 @@ if config.config_ini_section:
         config.set_main_option("sqlalchemy.url", database_url)
 
 
+target_metadata = [PropsBase.metadata, Base.metadata]
 target_metadata = PropsBase.metadata
 
 

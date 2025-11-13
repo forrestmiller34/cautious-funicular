@@ -19,6 +19,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from .models import Player
+
 
 class PropsBase(DeclarativeBase):
     """Declarative base for props specific tables."""
@@ -87,6 +89,7 @@ class Prop(PropsBase):
     )
 
     event: Mapped[Event] = relationship("Event", back_populates="props")
+    player = relationship(Player)
     player: Mapped[Player] = relationship("Player", back_populates="props")
 
 

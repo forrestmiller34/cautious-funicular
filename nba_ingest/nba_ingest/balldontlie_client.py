@@ -87,6 +87,18 @@ class BallDontLieClient:
             params["postseason"] = str(postseason).lower()
         yield from self._paginate("/v1/stats/advanced", params)
 
+    def list_stats_for_seasons(
+        self, seasons: Iterable[int], postseason: Optional[bool] = None
+    ) -> Iterator[Dict[str, object]]:
+        params: Dict[str, object] = {"per_page": 100}
+        for season in seasons:
+            params.setdefault("seasons[]", [])
+            if isinstance(params["seasons[]"], list):
+                params["seasons[]"].append(season)
+        if postseason is not None:
+            params["postseason"] = str(postseason).lower()
+        yield from self._paginate("/v1/stats", params)
+
     def list_odds_by_date(self, date: str) -> List[Dict[str, object]]:
         """Retrieve odds for the specified date (YYYY-MM-DD)."""
         params: Dict[str, object] = {"dates[]": date, "per_page": 100}

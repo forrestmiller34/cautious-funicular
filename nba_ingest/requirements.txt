@@ -2,7 +2,9 @@ requests
 SQLAlchemy
 psycopg2-binary
 python-dotenv
+python-dateutil
 pandas
+nba_api
 scikit-learn
 joblib
 fastapi
