@@ -26,6 +26,22 @@ class PropsBase(DeclarativeBase):
     """Declarative base for props specific tables."""
 
 
+class Player(PropsBase):
+    __tablename__ = "players"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    props: Mapped[list[Prop]] = relationship("Prop", back_populates="player")
+
+
 class Event(PropsBase):
     __tablename__ = "events"
 
@@ -74,6 +90,7 @@ class Prop(PropsBase):
 
     event: Mapped[Event] = relationship("Event", back_populates="props")
     player = relationship(Player)
+    player: Mapped[Player] = relationship("Player", back_populates="props")
 
 
 class Checkpoint(PropsBase):
@@ -114,6 +131,7 @@ class IngestionRun(PropsBase):
 
 __all__ = [
     "PropsBase",
+    "Player",
     "Event",
     "Prop",
     "Checkpoint",

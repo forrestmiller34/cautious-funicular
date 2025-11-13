@@ -226,6 +226,18 @@ The orchestrator will:
 4. Finish with The Odds API historical props for dates on/after 2023-05-03.
 
 Each provider updates its `ingestion_state` row after completing a date so reruns automatically pick up from the next day. Logs include the processed date, number of discovered events, and number of odds rows written to help operators verify coverage. CSV exports or sample validation queries can be added once live API keys are configured, but the tests exercise each loader with fixture responses to guarantee the schema and upserts behave as expected.
+## Hybrid Player Props Ingestion
+
+The repository now ships with an end-to-end pipeline that backfills and maintains historical NBA player props by combining two providers:
+
+* **SportsGameOdds (SGO)** – Covers 2021-10-19 through 2023-05-02. We run a single free-plan account with a hard quota of 2,500 events per calendar month and a rate limit of **10 requests/minute**. Each fetched event counts toward the monthly object quota, so the worker keeps a 50-event buffer and pauses automatically once the quota is nearly exhausted.
+* **The Odds API** – Supplies historical props from 2023-05-03 forward. The historical endpoint enforces **30 requests/minute**, which the worker throttles before every request (discovery and market pulls). The Odds API’s dataset begins on 2023-05-03T05:30:00Z; earlier dates must be handled by SportsGameOdds or skipped.
+
+Because the providers expose different windows, every backfill splits on **2023-05-03** (exclusive lower bound for The Odds API). The CLI automatically routes each date to the correct provider and is safe to resume in-place thanks to checkpoint rows and database upserts.
+
+### Database schema and migrations
+
+Player props live in their own tables (`players`, `events`, `props`, `checkpoints`, `ingestion_runs`). Apply the Alembic migration before running the CLI:
 
 ```bash
 alembic upgrade head

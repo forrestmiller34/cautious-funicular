@@ -20,6 +20,7 @@ from .db import create_db_engine, create_session_factory, get_session
 from .odds_api_client import TheOddsApiClient
 from .models import Base, Player
 from .props_models import Checkpoint, Event, IngestionRun, Prop, PropsBase
+from .props_models import Checkpoint, Event, IngestionRun, Player, Prop, PropsBase
 from .props_settings import PropsSettings, load_props_settings
 from .props_utils import (
     canonicalize_player_name,
@@ -129,6 +130,8 @@ def _ensure_player(session: Session, player_name: str) -> Player:
             index_elements=[Player.canonical_name],
             set_={"full_name": player_name},
         )
+        .values(name=player_name, canonical_name=canonical)
+        .on_conflict_do_update(index_elements=[Player.canonical_name], set_={"name": player_name})
         .returning(Player)
     )
     return session.execute(stmt).scalar_one()
