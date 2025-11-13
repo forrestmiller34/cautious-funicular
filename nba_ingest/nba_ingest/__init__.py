@@ -12,4 +12,9 @@ __all__ = [
     "odds_math",
     "odds_ingest",
     "api",
+    "props_models",
+    "props_settings",
+    "sports_game_odds_client",
+    "odds_api_client",
+    "props_hybrid_ingest",
 ]

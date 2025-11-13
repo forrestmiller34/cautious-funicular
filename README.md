@@ -148,3 +148,77 @@ Phase 3 extends the project with betting odds ingestion, pricing math helpers, a
    ```
 
 These additions prepare the project for integrating sportsbook lines with the statistical model and lay the groundwork for future betting tools.
+
+## Hybrid Player Props Ingestion
+
+The repository now ships with an end-to-end pipeline that backfills and maintains historical NBA player props by combining two providers:
+
+* **SportsGameOdds (SGO)** – Covers 2021-10-19 through 2023-05-02. We run a single free-plan account with a hard quota of 2,500 events per calendar month and a rate limit of **10 requests/minute**. Each fetched event counts toward the monthly object quota, so the worker keeps a 50-event buffer and pauses automatically once the quota is nearly exhausted.
+* **The Odds API** – Supplies historical props from 2023-05-03 forward. The historical endpoint enforces **30 requests/minute**, which the worker throttles before every request (discovery and market pulls). The Odds API’s dataset begins on 2023-05-03T05:30:00Z; earlier dates must be handled by SportsGameOdds or skipped.
+
+Because the providers expose different windows, every backfill splits on **2023-05-03** (exclusive lower bound for The Odds API). The CLI automatically routes each date to the correct provider and is safe to resume in-place thanks to checkpoint rows and database upserts.
+
+### Database schema and migrations
+
+Player props live in their own tables (`players`, `events`, `props`, `checkpoints`, `ingestion_runs`). Apply the Alembic migration before running the CLI:
+
+```bash
+alembic upgrade head
+```
+
+The CLI still attempts to create tables opportunistically, but running the migration keeps schema drift under control for future releases.
+
+### Environment configuration
+
+Add the following keys to `.env` (or the process environment). All are required unless a default is noted.
+
+```env
+DATABASE_URL=postgres://user:password@host:5432/dbname
+SGO_API_KEY=...
+SGO_BASE_URL=https://api.sportsgameodds.com
+SGO_OBJECTS_PER_MONTH=2500
+SGO_REQS_PER_MIN=10
+SGO_INCLUDE_ALT_LINES=false
+ODDS_API_KEY=...
+ODDS_API_BASE_URL=https://api.the-odds-api.com/v4
+ODDS_REQS_PER_MIN=30
+PROP_MARKETS=player_points,player_assists,player_rebounds,player_threes
+REGION=us
+HISTORICAL_START=2021-10-19
+HISTORICAL_SPLIT=2023-05-03
+HISTORICAL_END=2025-11-11
+DRY_RUN=false
+GLOBAL_MAX_EVENTS=7000
+TOS_ACK_SINGLE_ACCOUNT=true
+```
+
+`PROP_MARKETS` is parsed as CSV, while booleans accept `true/false/1/0`. The SGO worker refuses to run unless `TOS_ACK_SINGLE_ACCOUNT=true` to acknowledge that we are intentionally using a single free-tier account per the provider’s ToS.
+
+### CLI usage
+
+Run the hybrid ingest from the repository root:
+
+```bash
+python -m nba_ingest.props_hybrid_ingest \
+  --start 2021-10-19 \
+  --end 2025-11-11 \
+  --markets player_points,player_assists,player_rebounds,player_threes \
+  --region us \
+  --resume true
+```
+
+Important behavior:
+
+* **Discovery + checkpoints** – Every event is discovered once per provider/date and stored in the `checkpoints` table. Re-running with `--resume true` keeps previously-discovered events and only adds new ones, making the process idempotent.
+* **Rate limiting** – The coordinator enforces the per-provider limits (10 req/min for SGO, 30 req/min for The Odds API) before every HTTP call. 429 responses trigger a 60-second wait with up to five retries; 5xx responses use exponential backoff capped at 64 seconds.
+* **Partial market support** – If a provider returns zero props for a game, the run logs a warning but still marks the checkpoint as done so it will not get stuck.
+* **Logging + reporting** – Every five minutes (configurable via `--log-interval-seconds`) the CLI prints global progress, provider throughput, rate-limit/5xx counters, current Odds API request rate, and the SGO quota estimate. When the run finishes it writes `reports/props_hybrid_ingest_<timestamp>.csv` that captures each checkpoint, outcome, and elapsed processing time.
+
+### Ops tips
+
+* **Pilot before the full backfill** – Run a small window (for example, one week) before attempting the entire historical range to verify market coverage and bookmaker availability. Not every market will be present for every game; this variability is normal and the pipeline simply stores whatever is available.
+* **Monthly SGO quota resets** – When the `SGO_OBJECTS_PER_MONTH` quota is nearly exhausted the SGO worker stops claiming new checkpoints automatically. Resume the run after the provider resets usage by re-running the same CLI command with `--resume true`; the pending SGO checkpoints remain queued in the database.
+* **Dry runs** – Set `DRY_RUN=true` (or pass `--dry-run true`) to validate discovery, checkpointing, and logging without making provider API calls.
+* **Safety caps** – `GLOBAL_MAX_EVENTS` limits how many checkpoints the workers claim in a single invocation to guard against runaway costs. If the cap triggers the CLI prints a message explaining how to resume.
+
+When deploying this ingestion process in production, ensure that Alembic migrations run before each release, that environment variables remain secret, and that you track monthly SGO usage so you can plan resumptions around the free-plan quota reset.
