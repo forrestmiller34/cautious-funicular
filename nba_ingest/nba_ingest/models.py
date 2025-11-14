@@ -326,6 +326,7 @@ class OddsMarket(Base):
     side: Mapped[str | None] = mapped_column(String(32))
     provider_raw: Mapped[dict | None] = mapped_column(JSONB)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    identity_key: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
@@ -334,18 +335,7 @@ class OddsMarket(Base):
     bookmaker: Mapped[OddsBook] = relationship("OddsBook", back_populates="markets")
 
     __table_args__ = (
-        UniqueConstraint(
-            "event_id",
-            "provider",
-            "bookmaker_id",
-            "market_type",
-            "participant_type",
-            "participant_id",
-            "side",
-            "line",
-            "as_of",
-            name="uq_odds_markets_snapshot",
-        ),
+        UniqueConstraint("identity_key", name="uq_odds_markets_identity"),
     )
 
 
