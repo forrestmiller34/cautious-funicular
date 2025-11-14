@@ -170,6 +170,7 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
         session.commit()
         league_id = league.id
 
+    ingest_betsapi_team_odds(
     bets_stats = ingest_betsapi_team_odds(
         session_factory=SessionLocal,
         league_id=league_id,
@@ -178,6 +179,7 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
         end_date=date(2021, 10, 19),
     )
 
+    ingest_sgo_player_props(
     sgo_stats = ingest_sgo_player_props(
         session_factory=SessionLocal,
         league_id=league_id,
@@ -187,6 +189,7 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
         markets=("player_points", "player_assists", "player_rebounds", "player_threes"),
     )
 
+    ingest_odds_api_player_props(
     odds_stats = ingest_odds_api_player_props(
         session_factory=SessionLocal,
         league_id=league_id,

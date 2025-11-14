@@ -367,6 +367,10 @@ def upsert_odds_market(
         side=side,
         provider_raw=provider_raw,
         as_of=as_of,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_odds_markets_snapshot",
+        set_={"price": stmt.excluded.price, "provider_raw": stmt.excluded.provider_raw},
         identity_key=identity_key,
     )
     stmt = stmt.on_conflict_do_update(
