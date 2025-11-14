@@ -18,13 +18,77 @@ from .models import (
     Player,
     PlayerGameAdvanced,
     PlayerGameStat,
+    SeasonAverage,
     Team,
 )
 from .normalization import canonicalize_player_name, canonicalize_team_name, season_label
 
+SEASON_AVERAGE_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "general": ("base", "advanced", "usage", "scoring", "defense", "misc"),
+    "clutch": ("base", "advanced", "scoring", "usage", "misc"),
+    "defense": (
+        "overall",
+        "less_than_6ft",
+        "less_than_10ft",
+        "greater_than_15ft",
+        "2_pointers",
+        "3_pointers",
+    ),
+    "shooting": ("5ft_range", "by_zone"),
+}
+
+SEASON_AVERAGE_SEASON_TYPES: tuple[str, ...] = (
+    "regular",
+    "playoffs",
+    "playin",
+    "ist",
+)
+
 
 def log(message: str) -> None:
     print(f"[BDL] {message}", flush=True)
+
+
+def _to_int(value: object | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_bool(value: object | None) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "t", "1", "yes"}:
+            return True
+        if lowered in {"false", "f", "0", "no"}:
+            return False
+    return None
+
+
+def _nested_value(payload: dict, path: tuple[str, ...]) -> object | None:
+    current: object | None = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _score_value(payload: dict, *paths: tuple[str, ...] | str) -> int | None:
+    for path in paths:
+        if isinstance(path, tuple):
+            candidate = _nested_value(payload, path)
+        else:
+            candidate = payload.get(path)
+        value = _to_int(candidate)
+        if value is not None:
+            return value
+    return None
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -87,17 +151,91 @@ def _ensure_game(session: Session, payload: dict) -> int | None:
             parsed_date = datetime.strptime(raw_date.split("T")[0], "%Y-%m-%d").date()
     else:
         parsed_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+    scoreboard_fields = {
+        "status": payload.get("status"),
+        "period": _to_int(payload.get("period")),
+        "time": payload.get("time"),
+        "postseason": _to_bool(payload.get("postseason")),
+        "home_q1": _score_value(
+            payload,
+            "home_q1",
+            ("home_period_scores", "q1"),
+            ("scores", "home", "q1"),
+        ),
+        "home_q2": _score_value(
+            payload,
+            "home_q2",
+            ("home_period_scores", "q2"),
+            ("scores", "home", "q2"),
+        ),
+        "home_q3": _score_value(
+            payload,
+            "home_q3",
+            ("home_period_scores", "q3"),
+            ("scores", "home", "q3"),
+        ),
+        "home_q4": _score_value(
+            payload,
+            "home_q4",
+            ("home_period_scores", "q4"),
+            ("scores", "home", "q4"),
+        ),
+        "home_ot": _score_value(
+            payload,
+            "home_ot",
+            ("home_period_scores", "ot"),
+            ("scores", "home", "ot"),
+        ),
+        "away_q1": _score_value(
+            payload,
+            "away_q1",
+            ("visitor_period_scores", "q1"),
+            ("scores", "visitor", "q1"),
+        ),
+        "away_q2": _score_value(
+            payload,
+            "away_q2",
+            ("visitor_period_scores", "q2"),
+            ("scores", "visitor", "q2"),
+        ),
+        "away_q3": _score_value(
+            payload,
+            "away_q3",
+            ("visitor_period_scores", "q3"),
+            ("scores", "visitor", "q3"),
+        ),
+        "away_q4": _score_value(
+            payload,
+            "away_q4",
+            ("visitor_period_scores", "q4"),
+            ("scores", "visitor", "q4"),
+        ),
+        "away_ot": _score_value(
+            payload,
+            "away_ot",
+            ("visitor_period_scores", "ot"),
+            ("scores", "visitor", "ot"),
+        ),
+        "home_timeouts_remaining": _to_int(payload.get("home_timeouts_remaining")),
+        "away_timeouts_remaining": _to_int(payload.get("away_timeouts_remaining")),
+        "home_in_bonus": _to_bool(payload.get("home_in_bonus")),
+        "away_in_bonus": _to_bool(payload.get("away_in_bonus")),
+    }
+
     game_values = {
         "game_date": parsed_date,
         "season": season_label(payload.get("season")),
-        "season_type": "playoffs" if payload.get("postseason") else "regular",
+        "season_type": payload.get("season_type")
+        or ("playoffs" if payload.get("postseason") else "regular"),
         "home_team_id": home_id,
         "away_team_id": away_id,
         "home_score": payload.get("home_team_score"),
         "away_score": payload.get("visitor_team_score"),
         "tipoff_datetime_utc": _parse_datetime(payload.get("datetime")),
         "bdl_game_id": payload.get("id"),
+        "raw_json": payload,
     }
+    game_values.update(scoreboard_fields)
     stmt = (
         insert(Game)
         .values(**game_values)
@@ -107,6 +245,25 @@ def _ensure_game(session: Session, payload: dict) -> int | None:
                 "home_score": game_values["home_score"],
                 "away_score": game_values["away_score"],
                 "tipoff_datetime_utc": game_values["tipoff_datetime_utc"],
+                "status": game_values["status"],
+                "period": game_values["period"],
+                "time": game_values["time"],
+                "postseason": game_values["postseason"],
+                "home_q1": game_values["home_q1"],
+                "home_q2": game_values["home_q2"],
+                "home_q3": game_values["home_q3"],
+                "home_q4": game_values["home_q4"],
+                "home_ot": game_values["home_ot"],
+                "away_q1": game_values["away_q1"],
+                "away_q2": game_values["away_q2"],
+                "away_q3": game_values["away_q3"],
+                "away_q4": game_values["away_q4"],
+                "away_ot": game_values["away_ot"],
+                "home_timeouts_remaining": game_values["home_timeouts_remaining"],
+                "away_timeouts_remaining": game_values["away_timeouts_remaining"],
+                "home_in_bonus": game_values["home_in_bonus"],
+                "away_in_bonus": game_values["away_in_bonus"],
+                "raw_json": game_values["raw_json"],
             },
         )
         .returning(Game.id)
@@ -226,6 +383,14 @@ def _upsert_player_advanced(session: Session, stat: dict) -> None:
         "assist_pct": stat.get("ast_pct"),
         "steal_pct": stat.get("stl_pct"),
         "block_pct": stat.get("blk_pct"),
+        "pie": stat.get("pie"),
+        "pace": stat.get("pace"),
+        "assist_ratio": stat.get("ast_ratio"),
+        "assist_to_turnover": stat.get("ast_tov"),
+        "effective_fg_pct": stat.get("efg_pct"),
+        "net_rating": stat.get("net_rating"),
+        "rebound_pct": stat.get("reb_pct"),
+        "turnover_ratio": stat.get("tov_ratio"),
         "raw_json": stat,
     }
     stmt = (
@@ -234,6 +399,50 @@ def _upsert_player_advanced(session: Session, stat: dict) -> None:
         .on_conflict_do_update(
             constraint="uq_player_game_adv_game_player",
             set_={k: payload[k] for k in payload if k not in {"game_id", "player_id", "team_id"}},
+        )
+    )
+    session.execute(stmt)
+
+
+def _upsert_season_average(
+    session: Session,
+    payload: dict,
+    *,
+    season: int,
+    season_type: str,
+    category: str,
+    stat_type: str,
+) -> None:
+    player = payload.get("player", {}) or {}
+    player_payload = {
+        "id": player.get("id"),
+        "full_name": player.get("full_name"),
+        "first_name": player.get("first_name"),
+        "last_name": player.get("last_name"),
+        "position": player.get("position"),
+        "height": player.get("height"),
+        "weight": player.get("weight"),
+    }
+    player_id = _ensure_player(session, player_payload)
+    stats = payload.get("stats") or {}
+    record = {
+        "player_id": player_id,
+        "season": season,
+        "season_type": season_type,
+        "category": category,
+        "stat_type": stat_type,
+        "stats": stats,
+        "raw_player": player or None,
+    }
+    stmt = (
+        insert(SeasonAverage)
+        .values(**record)
+        .on_conflict_do_update(
+            constraint="uq_season_avg_player_season_category",
+            set_={
+                "stats": record["stats"],
+                "raw_player": record["raw_player"],
+            },
         )
     )
     session.execute(stmt)
@@ -304,6 +513,49 @@ def ingest_player_advanced(
         log(f"Season {season}: ingested {season_count} advanced stat rows.")
         count += season_count
     return count
+
+
+def ingest_season_averages(
+    client: BallDontLieClient,
+    session: Session,
+    seasons: Iterable[int],
+    season_types: Sequence[str] | None = None,
+) -> int:
+    total = 0
+    seasons = list(seasons)
+    if season_types is None:
+        season_types = list(SEASON_AVERAGE_SEASON_TYPES)
+    else:
+        season_types = list(season_types)
+
+    for season in seasons:
+        for season_type in season_types:
+            log(
+                "Processing season %s (%s) for season averages..."
+                % (season, season_type)
+            )
+            for category, stat_types in SEASON_AVERAGE_CATEGORIES.items():
+                for stat_type in stat_types:
+                    for payload in client.list_season_averages(
+                        season,
+                        season_type=season_type,
+                        category=category,
+                        stat_type=stat_type,
+                    ):
+                        _upsert_season_average(
+                            session,
+                            payload,
+                            season=season,
+                            season_type=season_type,
+                            category=category,
+                            stat_type=stat_type,
+                        )
+                        total += 1
+    log(
+        "Finished ingesting %s season average rows for seasons=%s season_types=%s"
+        % (total, seasons, season_types)
+    )
+    return total
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -383,9 +635,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         games = ingest_games(client, session, seasons, postseason_flag)
         stats = ingest_player_stats(client, session, seasons, postseason_flag)
         advanced = ingest_player_advanced(client, session, seasons, postseason_flag)
+        season_avgs = ingest_season_averages(client, session, seasons)
         log(
             f"Finished BallDontLie ingest: teams={teams}, games={games}, "
-            f"box_rows={stats}, advanced_rows={advanced}."
+            f"box_rows={stats}, advanced_rows={advanced}, "
+            f"season_average_rows={season_avgs}."
         )
 
 
