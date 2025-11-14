@@ -19,6 +19,10 @@ from .models import Base, Game, PlayByPlayEvent, Player, Team
 from .normalization import canonicalize_player_name
 
 
+def log(message: str) -> None:
+    print(f"[NBA_PBP] {message}", flush=True)
+
+
 def _load_database_url() -> str:
     load_dotenv()
     url = os.environ.get("DATABASE_URL")
@@ -78,11 +82,12 @@ def _ensure_player(session: Session, nba_id: int | None, name: str | None) -> in
     return session.execute(stmt).scalar_one()
 
 
-def _map_scoreboard_games(session: Session, target_date: date) -> None:
+def _map_scoreboard_games(session: Session, target_date: date) -> int:
     sb = ScoreboardV2(game_date=target_date.strftime("%m/%d/%Y"))
     games_df = sb.game_header.get_data_frame()
     if games_df.empty:
-        return
+        return 0
+    mapped = 0
     for _, row in games_df.iterrows():
         nba_game_id = row.get("GAME_ID")
         game_date = _parse_date(row.get("GAME_DATE_EST"))
@@ -118,17 +123,27 @@ def _map_scoreboard_games(session: Session, target_date: date) -> None:
             session.execute(
                 update(Game).where(Game.id == game.id).values(nba_game_id=nba_game_id)
             )
+        mapped += 1
+    return mapped
 
 
 def _ingest_play_by_play(session: Session, game: Game, delay: float) -> int:
     if not game.nba_game_id:
+        log(f"{game.game_date}: skipping game {game.id} (missing NBA game id).")
         return 0
     pbp = PlayByPlayV2(game_id=game.nba_game_id)
     frames = pbp.get_data_frames()
     if not frames:
+        log(f"{game.game_date}: skipping game {game.nba_game_id} (no play-by-play data).")
         return 0
     df = frames[0]
     inserted = 0
+    home_team_name = getattr(game.home_team, "name", f"home_id={game.home_team_id}")
+    away_team_name = getattr(game.away_team, "name", f"away_id={game.away_team_id}")
+    log(
+        f"{game.game_date}: fetching PBP for game {game.nba_game_id} "
+        f"({home_team_name} vs {away_team_name})..."
+    )
     for _, row in df.iterrows():
         event_num = int(row.get("EVENTNUM"))
         description = row.get("HOMEDESCRIPTION") or row.get("VISITORDESCRIPTION") or row.get("NEUTRALDESCRIPTION")
@@ -167,6 +182,9 @@ def _ingest_play_by_play(session: Session, game: Game, delay: float) -> int:
         session.execute(stmt)
         inserted += 1
     time.sleep(delay)
+    log(
+        f"{game.game_date}: stored {inserted} PBP events for game {game.nba_game_id}."
+    )
     return inserted
 
 
@@ -179,25 +197,43 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
     end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
+    log(
+        f"Starting NBA play-by-play ingest from {start_date} to {end_date} "
+        f"with delay={args.delay}s."
+    )
     database_url = _load_database_url()
     engine = create_db_engine(database_url)
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
 
     with get_session(session_factory) as session:
+        num_dates = 0
         for target_date in _daterange(start_date, end_date):
-            _map_scoreboard_games(session, target_date)
-        games = session.execute(
-            select(Game).where(
-                Game.nba_game_id.is_not(None),
-                Game.game_date >= start_date,
-                Game.game_date <= end_date,
-            )
-        ).scalars()
+            log(f"Processing date {target_date}: syncing scoreboard...")
+            mapped = _map_scoreboard_games(session, target_date)
+            log(f"Processing date {target_date}: mapped {mapped} games from scoreboard.")
+            num_dates += 1
+        games = list(
+            session.execute(
+                select(Game).where(
+                    Game.nba_game_id.is_not(None),
+                    Game.game_date >= start_date,
+                    Game.game_date <= end_date,
+                )
+            ).scalars()
+        )
         total_events = 0
-        for game in games:
+        for idx, game in enumerate(games, start=1):
             total_events += _ingest_play_by_play(session, game, args.delay)
-        print(f"Ingested {total_events} play-by-play rows across nba_api games")
+            if idx % 10 == 0:
+                log(
+                    f"Processed {idx}/{len(games)} games so far; "
+                    f"events_ingested={total_events}."
+                )
+        log(
+            f"Finished NBA play-by-play ingest: dates={num_dates}, "
+            f"games={len(games)}, pbp_events={total_events}."
+        )
 
 
 if __name__ == "__main__":

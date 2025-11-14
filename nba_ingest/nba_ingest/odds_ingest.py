@@ -15,6 +15,10 @@ from .db import create_db_engine, create_session_factory, get_session
 from .models import Base, NBAGame, NBAGameOdds
 from .odds_math import decimal_to_american
 
+
+def log(message: str) -> None:
+    print(f"[ODDS_INGEST] {message}", flush=True)
+
 DATE_FORMAT = "%Y-%m-%d"
 
 
@@ -399,7 +403,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     target_date: date = args.date or datetime.now(timezone.utc).date()
-    print(f"Fetching odds for {target_date:%Y-%m-%d}…")
+    log(f"Starting odds_ingest for date={target_date}.")
 
     settings = load_settings()
     engine = create_db_engine(settings.database_url)
@@ -409,13 +413,16 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     payloads = client.list_odds_by_date(target_date.strftime(DATE_FORMAT))
     if not payloads:
-        print("No odds payloads returned for the requested date.")
+        log(f"No odds payloads returned for the requested date {target_date}.")
         return
 
     with get_session(session_factory) as session:
         inserted, updated = ingest_odds_payloads(session, payloads)
         session.flush()
-    print(f"Odds upsert complete. Inserted {inserted} rows, updated {updated} rows.")
+    log(
+        f"Finished odds_ingest for date={target_date}: games={len(payloads)} "
+        f"odds_rows_inserted={inserted}, odds_rows_updated={updated}."
+    )
 
 
 if __name__ == "__main__":

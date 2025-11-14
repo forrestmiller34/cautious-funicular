@@ -18,6 +18,10 @@ from .normalization import canonicalize_player_name, canonicalize_team_name
 from .sports_game_odds_client import SportsGameOddsClient
 
 
+def log(message: str) -> None:
+    print(f"[SGO] {message}", flush=True)
+
+
 @dataclass(slots=True)
 class SgoSettings:
     api_key: str
@@ -125,6 +129,10 @@ def ingest_date(
     settings: SgoSettings,
 ) -> int:
     events = client.list_events_by_date(target_date)
+    log(f"SportsGameOdds: {target_date}: fetched {len(events)} events from provider.")
+    if not events:
+        log(f"SportsGameOdds: {target_date}: no events available, skipping.")
+        return 0
     rows = 0
     for event in events:
         home_team = _match_team(session, event.get("home_team") or event.get("homeTeam"))
@@ -201,6 +209,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     settings = _load_settings(markets_override)
     start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
     end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
+    log(
+        f"Starting SportsGameOdds ingest from {start_date} to {end_date}, "
+        f"sports=['nba'] markets={settings.markets}."
+    )
 
     engine = create_db_engine(settings.database_url)
     Base.metadata.create_all(engine)
@@ -210,8 +222,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     with get_session(session_factory) as session:
         total_rows = 0
         for target_date in _daterange(start_date, end_date):
+            log(f"nba: processing date {target_date}...")
+            before_rows = total_rows
             total_rows += ingest_date(session, client, target_date, settings)
-        print(f"Inserted/updated {total_rows} props rows from SportsGameOdds")
+            delta = total_rows - before_rows
+            if delta == 0:
+                log(f"nba: {target_date}: no props rows upserted.")
+            else:
+                log(f"nba: {target_date}: upserted {delta} props rows into game_odds.")
+        log(f"Finished SportsGameOdds ingest. Inserted/updated {total_rows} rows.")
 
 
 if __name__ == "__main__":
