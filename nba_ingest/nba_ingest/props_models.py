@@ -19,15 +19,19 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from .models import Player
-
+try:
+    # When imported as part of the package: nba_ingest.props_models
+    from .models import Player
+except ImportError:
+    # When imported as a top-level module (like Alembic does via env.py)
+    from .models import Player as CorePlayer  # optional rename to avoid confusion
 
 class PropsBase(DeclarativeBase):
     """Declarative base for props specific tables."""
 
 
 class Player(PropsBase):
-    __tablename__ = "players"
+    __tablename__ = "props_players"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -67,7 +71,7 @@ class Prop(PropsBase):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), nullable=False)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False)
+    player_id: Mapped[int] = mapped_column(ForeignKey("props_players.id", ondelete="CASCADE"), nullable=False)
     market_key: Mapped[str] = mapped_column(Text, nullable=False)
     line: Mapped[Numeric | None] = mapped_column(Numeric(10, 3))
     price: Mapped[int | None] = mapped_column(Integer)

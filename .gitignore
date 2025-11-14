@@ -1,4 +1,11 @@
+# Virtual environments
+.venv/
+nba_ingest/.venv/
+
+# Python junk
 __pycache__/
 *.pyc
+
+# Env files
 .env
-!nba_ingest/.env
+nba_ingest/.env
