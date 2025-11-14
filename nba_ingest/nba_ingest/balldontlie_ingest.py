@@ -46,18 +46,18 @@ def _upsert_team(session: Session, payload: dict) -> None:
         "bdl_team_id": payload.get("id"),
         "canonical_name": canonical,
     }
+
     stmt = insert(Team).values(**values)
-    if payload.get("id") is not None:
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_teams_bdl_team_id",
-            set_={k: values[k] for k in values if k not in {"bdl_team_id"}},
-        )
-    else:
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[Team.canonical_name],
-            set_={k: values[k] for k in values if k != "canonical_name"},
-        )
+
+    # Always upsert based on canonical_name so we merge into any existing team row
+    # (e.g., one that was created from another provider before Ball Don't Lie).
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Team.canonical_name],
+        set_={k: values[k] for k in values if k != "canonical_name"},
+    )
+
     session.execute(stmt)
+
 
 
 def _team_db_id(session: Session, bdl_team_id: int | None) -> int | None:
@@ -282,12 +282,55 @@ def ingest_player_advanced(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Backfill Ball Don't Lie data into the warehouse")
-    parser.add_argument("--postseason", action="store_true", help="Only ingest playoff games/stats")
+    parser = argparse.ArgumentParser(
+        description="Backfill Ball Don't Lie data into the warehouse"
+    )
+    parser.add_argument(
+        "--postseason",
+        action="store_true",
+        help="Only ingest playoff games/stats",
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        help="Start date (YYYY-MM-DD) used to infer NBA seasons",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        help="End date (YYYY-MM-DD) used to infer NBA seasons",
+    )
     args = parser.parse_args(argv)
 
     settings = load_settings()
     seasons = settings.seasons
+
+    # If --start/--end are provided, override the seasons list
+    if args.start or args.end:
+        if not (args.start and args.end):
+            parser.error("--start and --end must be provided together")
+
+        try:
+            start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
+        except ValueError:
+            parser.error(f"Invalid --start date '{args.start}', expected YYYY-MM-DD")
+
+        try:
+            end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
+        except ValueError:
+            parser.error(f"Invalid --end date '{args.end}', expected YYYY-MM-DD")
+
+        if end_date < start_date:
+            parser.error("--end date cannot be earlier than --start date")
+
+        # NBA season is labeled by the year it starts (e.g. 2021-22 -> 2021)
+        def season_for_date(d):
+            return d.year if d.month >= 7 else d.year - 1
+
+        start_season = season_for_date(start_date)
+        end_season = season_for_date(end_date)
+        seasons = list(range(start_season, end_season + 1))
+
     postseason_flag = True if args.postseason else None
 
     engine = create_db_engine(settings.database_url)

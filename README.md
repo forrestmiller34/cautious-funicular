@@ -1,369 +1,389 @@
+Here’s a full updated `README.md` you can paste in **as-is** (no code boxes).
+
+---
+
 # NBA Ingestion Project
 
-A cohesive ingestion stack for NBA analytics. The repository unifies multiple public APIs—Ball Don't Lie, nba_api, SportsGameOdds, The Odds API, and BetsAPI—into a single PostgreSQL schema so every team, player, game, and odds snapshot references shared IDs.
+A cohesive ingestion stack for NBA analytics. The repository unifies multiple public APIs—Ball Don't Lie, `nba_api`, SportsGameOdds, The Odds API, and BetsAPI—into a single PostgreSQL schema so every team, player, game, and odds snapshot references shared IDs. 
+
+The stack is designed to:
+
+* Backfill schedules, box scores, advanced stats, and play-by-play.
+* Ingest team moneyline/spread/total odds plus player props from multiple providers.
+* Keep everything in a single, canonical warehouse schema that is safe to re-run and extend.
+
+---
 
 ## Repository layout
 
-```
+High-level structure:
+
 README.md
+
 alembic/
-  └── versions/                 # Schema migrations (run via `alembic upgrade head`)
+
+* env.py                – Alembic config wired to the `nba_ingest` package and settings
+* script.py.mako        – Migration file template (used by `alembic revision`)
+* versions/             – Schema migrations (run via `alembic upgrade head`), including a single baseline `*_initial_schema.py`
+
 nba_ingest/
-  ├── requirements.txt          # Python dependencies
-  ├── nba_ingest/
-  │   ├── balldontlie_ingest.py # Teams/games/stats ETL
-  │   ├── nba_api_ingest_pbp.py # Game ID mapping + play-by-play ETL
-  │   ├── unified_odds_ingest.py# BetsAPI + SGO + The Odds API orchestrator
-  │   ├── props_hybrid_ingest.py# Resumable props worker (split SGO/Odds)
-  │   ├── sgo_ingest.py         # Standalone SGO loader
-  │   ├── odds_api_ingest.py    # Standalone Odds API loader
-  │   ├── models.py             # SQLAlchemy schema definitions
-  │   ├── normalization.py      # Name cleaning + mapping helpers
-  │   ├── sports_game_odds_client.py / odds_api_client.py / odds_helpers.py
-  │   └── ...                   # API server, feature pipeline, etc.
-nba_pbp_ingest.py               # Standalone parquet writer using nba_api
-```
-
-## Prerequisites
-
-1. **Python environment**
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r nba_ingest/requirements.txt
-   ```
-
-2. **Environment variables**
-   Define these in `.env` or your shell (all required unless noted). The orchestrators will exit with a clear error if any key is missing.
-
-   ```env
-   DATABASE_URL=postgres://user:password@host:5432/dbname
-
-   # Ball Don't Lie / nba_api
-   BALDONTLIE_API_KEY=...
-   NBA_SEASONS=2021,2022,2023,2024          # optional override for BDL backfills
-
-   # SportsGameOdds (player props < 2023-05-03)
-   SPORTSGAMEODDS_API_KEY=...
-   SGO_BASE_URL=https://api.sportsgameodds.com
-   SGO_OBJECTS_PER_MONTH=2500
-   SGO_REQS_PER_MIN=10
-   SGO_INCLUDE_ALT_LINES=false
-   TOS_ACK_SINGLE_ACCOUNT=true
-
-   # The Odds API (player props >= 2023-05-03)
-   ODDS_API_KEY=...
-   ODDS_API_BASE_URL=https://api.the-odds-api.com/v4
-   ODDS_REQS_PER_MIN=30
-   PROP_MARKETS=player_points,player_assists,player_rebounds,player_threes
-   REGION=us
-
-   # BetsAPI (team odds full window)
-   BETSAPI_API_KEY=...
-
-   # Hybrid ingest defaults
-   HISTORICAL_START=2021-10-19
-   HISTORICAL_SPLIT=2023-05-03
-   HISTORICAL_END=2025-11-11
-   DRY_RUN=false
-   GLOBAL_MAX_EVENTS=7000
-   ```
-
-3. **Database schema**
-   Apply migrations before running any loaders:
-   BALDONTLIE_API_KEY=your_key_here
-   DATABASE_URL=postgres://user:password@host:port/dbname
-   NBA_SEASONS=2021,2022,2023,2024
-   SPORTSGAMEODDS_API_KEY=your_sgo_key
-   ODDS_API_KEY=your_the_odds_api_key
-   BETSAPI_API_KEY=your_betsapi_key
-   ```
-
-   * `BALDONTLIE_API_KEY` – Required API key for the Ball Don't Lie API.
-   * `DATABASE_URL` – PostgreSQL connection string.
-   * `NBA_SEASONS` – Optional comma-separated list of seasons to ingest. If omitted, the last four seasons are used.
-   * `SPORTSGAMEODDS_API_KEY` – Credentials for the SportsGameOdds v2 API (player props through 2023-05-02).
-   * `ODDS_API_KEY` – Credentials for The Odds API historical NBA endpoint (props from 2023-05-03 onward).
-   * `BETSAPI_API_KEY` – Credentials for BetsAPI’s NBA feed (team moneyline/spread/total markets across the full window).
 
-4. **Run the ingest script**
+* .env                  – Local environment (DATABASE_URL, API keys). Not committed.
+* requirements.txt      – Python dependencies for the ingestion stack
+* nba_ingest/
 
-   ```bash
-   alembic upgrade head
-   ```
+  * balldontlie_ingest.py      – Teams/games/stats ETL (Ball Don’t Lie)
+  * nba_api_ingest_pbp.py      – Game ID mapping + play-by-play ETL (`nba_api`)
+  * unified_odds_ingest.py     – Orchestrator for BetsAPI + SportsGameOdds + The Odds API
+  * props_hybrid_ingest.py     – Resumable hybrid props worker (SGO + The Odds API)
+  * sgo_ingest.py              – Standalone SportsGameOdds loader
+  * odds_api_ingest.py         – Standalone The Odds API loader
+  * models.py                  – Core SQLAlchemy schema (teams, games, players, stats, odds)
+  * props_models.py            – Props-specific schema (`props_players`, `props`, checkpoints)
+  * normalization.py           – Name cleaning + mapping helpers
+  * sports_game_odds_client.py – Typed SGO client with rate limiting
+  * odds_api_client.py         – Typed The Odds API client with rate limiting
+  * odds_helpers.py            – Helpers for standardizing odds, markets, line keys
+  * config.py                  – Settings loader (env + `.env` via `python-dotenv`)
 
-## Canonical schema highlights
+nba_pbp_ingest.py       – Optional standalone parquet writer using `nba_api`
 
-* **leagues, teams, players** – Canonical IDs with JSON `provider_*_ids` maps so every API response resolves to a single internal entity.
-* **events (games)** – One row per NBA game with home/away team FKs, start time, season metadata, and provider event IDs.
-* **player_game_stats / player_game_advanced** – Box score + advanced stats keyed by `(game_id, player_id)`.
-* **play_by_play** – All nba_api events keyed by `(game_id, event_num)` with normalized team/player references.
-* **odds_books / odds_markets** – Unified odds + props table storing provider, bookmaker, market type, participant, line/price, and ingestion timestamp.
-* **checkpoints / ingestion_state / ingestion_runs** – Track resumable progress for long-running jobs.
+reset_schema.py         – Dev helper script to drop/recreate the `public` schema and reapply migrations
 
-## How to “start the machine” (run end-to-end ingestion)
+---
 
-Run these commands from the repo root, in order, after configuring the environment and database:
-All providers now share a unified warehouse schema so that every row references the same `teams`, `players`, and `games` records. The core tables are:
+## Setup
 
-- **`teams`** – Canonical metadata for each NBA franchise with `bdl_team_id`, `nba_team_id`, and a `canonical_name` used when matching provider payloads.
-- **`players`** – Canonical player identities with Ball Don’t Lie/NBA IDs, normalized names, and basic bio fields plus timestamps.
-- **`games`** – One row per real game with references to home/away teams, season/season_type, final scores, tip-off time, and provider IDs (`bdl_game_id`, `nba_game_id`, `odds_api_event_id`, `sgo_event_id`).
-- **`player_game_stats`** – Traditional box score stats from Ball Don’t Lie keyed by `(game_id, player_id)`.
-- **`player_game_advanced`** – Advanced metrics from Ball Don’t Lie keyed by `(game_id, player_id)`.
-- **`play_by_play`** – Full play-by-play events from `nba_api` tied back to the canonical game and players.
-- **`game_odds`** – Unified table for team markets and player props across The Odds API and SportsGameOdds. Rows capture provider, bookmaker, market/line metadata, American odds, inferred participant (team or player), last update timestamps, and the ingestion snapshot.
+### 1. Python environment
 
-Alembic migrations manage these tables. Run `alembic upgrade head` after pulling new changes to ensure your schema is current.
+Create and activate a virtual environment at the repo root, then install dependencies from `nba_ingest/requirements.txt`.
 
-## Phase 2 – Win Probability Model
+Windows (PowerShell):
 
-With the ingestion pipeline in place, the project now includes utilities for training and using a pre-game home-team win probability model.
+* python -m venv .venv
+* ..venv\Scripts\Activate.ps1
+* python -m pip install -r nba_ingest\requirements.txt
 
-1. **Ensure data is ingested**
+macOS / Linux:
 
-   Run the ingestion script (see above) so the latest games and advanced stats are available in the database.
+* python3 -m venv .venv
+* source .venv/bin/activate
+* pip install -r nba_ingest/requirements.txt
 
-2. **Train the model**
+---
 
-1. **Ball Don't Lie schedules + stats** – Populates teams, games, and box score tables.
-   ```bash
-   python -m nba_ingest.balldontlie_ingest --start 2021-10-19 --end 2025-11-11
-   ```
+### 2. Environment variables
 
-2. **nba_api mapping + play-by-play** – Fills `games.nba_game_id` and writes play-by-play rows.
-   ```bash
-   python -m nba_ingest.nba_api_ingest_pbp --start 2021-10-19 --end 2025-11-11 --delay 1.0
-   ```
+Configuration is loaded via `nba_ingest.config.load_settings()`, which reads from:
 
-3. **Team odds + player props (unified orchestrator)** – Runs BetsAPI, SGO, and The Odds API sequentially with resumable checkpoints.
-   ```bash
-   python -m nba_ingest.unified_odds_ingest --start 2021-10-19 --end 2025-11-11
-   ```
+* Environment variables, and
+* The `nba_ingest/.env` file (using `python-dotenv`), if present.
 
-   *Internally, the orchestrator processes BetsAPI team markets for the full window, SGO player props through 2023-05-02, then The Odds API props from 2023-05-03 forward. Progress is recorded in `ingestion_state` so reruns continue from the next incomplete date.*
-   This command loads the saved model, assembles features for the specified matchup/date, and prints the predicted probability that the home team wins.
+Typical `.env` values:
 
-The model currently focuses on pre-game home win probability using season-long trends, recent team form, and rest days derived from the ingested advanced statistics. Later phases will integrate betting odds and power a public-facing API.
-
-## Unified ETL modules
-
-Each provider has a dedicated module that reads from its API, normalizes the payload, and upserts into the canonical tables:
-
-1. **Ball Don't Lie (teams, games, stats)**
-
-   ```bash
-   python -m nba_ingest.balldontlie_ingest
-   ```
-
-   The script syncs `teams`, `games`, `player_game_stats`, and `player_game_advanced`. It matches by Ball Don’t Lie IDs first, then falls back to canonical names, ensuring re-runs are idempotent.
-
-2. **NBA API scoreboard + play-by-play**
-
-   ```bash
-   python -m nba_ingest.nba_api_ingest_pbp --start 2021-10-19 --end 2025-11-11 --delay 1.0
-   ```
-
-   For each date in the window the script maps `nba_game_id` onto existing `games` rows via home/away teams, then fetches play-by-play logs. Every event is keyed by `(game_id, event_num)` so rerunning the command safely refreshes prior data.
-
-3. **The Odds API team odds + player props**
-
-   ```bash
-   python -m nba_ingest.odds_api_ingest --start 2023-05-03 --end 2023-06-30 --markets player_points,player_assists
-   ```
-
-   Historical snapshots are pulled at a configurable timestamp (defaults to `12:00:00Z`). Team names are normalized to match the `games` table, provider event IDs are persisted, and every bookmaker/market/outcome is written to `game_odds` with proper participant foreign keys.
-
-4. **SportsGameOdds player props**
-
-   ```bash
-   python -m nba_ingest.sgo_ingest --start 2021-10-19 --end 2023-05-02 --markets player_points,player_rebounds
-   ```
-
-   Events are mapped by date + teams, the `games.sgo_event_id` is filled, and all props are saved into `game_odds` with `provider='sgo'`. Set `SGO_INCLUDE_ALT_LINES=true` if you want to record alternate offerings.
-
-All commands expect `DATABASE_URL` plus the provider-specific API keys described below to be present in your environment.
-
-## Phase 3 – API and Odds
-
-Phase 3 extends the project with betting odds ingestion, pricing math helpers, and a FastAPI backend that surfaces the win probability model alongside market information.
-
-1. **Install updated dependencies**
-
-   Additional libraries (`fastapi`, `uvicorn[standard]`, `nba_api`) have been added to `nba_ingest/requirements.txt`. Re-run the installation step if you installed dependencies before this phase.
-
-4. **(Optional) Dedicated hybrid props worker** – If you need tighter control over props ingestion (e.g., separate scheduling), call the resumable worker directly.
-   ```bash
-   python -m nba_ingest.props_hybrid_ingest \
-     --start 2021-10-19 \
-     --end 2025-11-11 \
-     --markets player_points,player_assists,player_rebounds,player_threes \
-     --region us \
-     --resume true
-   ```
-
-5. **(Optional) Standalone parquet exporter** – Writes nba_api play-by-play logs per game as Parquet for ad-hoc analysis.
-   ```bash
-   python nba_pbp_ingest.py
-   ```
-
-## Provider-specific notes
-   The new odds ETL flows (`nba_ingest.odds_api_ingest` and `nba_ingest.sgo_ingest`) supersede the original `odds_ingest` script by writing into the canonical `game_odds` table. You can still call the legacy script if you need backward compatibility, but new data should flow through the unified ingest described above.
-
-### SportsGameOdds (player props: 2021-10-19 → 2023-05-02)
-* Uses `SPORTSGAMEODDS_API_KEY` and enforces 10 req/min plus the monthly object quota.
-* `sports_game_odds_client.py` handles pagination, retries, and rate limiting.
-* `sgo_ingest.py` / `props_hybrid_ingest.py` normalize team/player names, map events into `games`, and upsert props (`player_points`, `player_assists`, `player_rebounds`, `player_threes`) into `odds_markets` with `provider='sportsgameodds'`.
-
-### The Odds API (player props: 2023-05-03 → 2025-11-11)
-* `odds_api_client.py` enforces 30 req/min and retries 429/5xx responses with backoff.
-* `odds_api_ingest.py` and the unified orchestrator call the historical endpoints at a canonical timestamp (default `12:00:00Z`). Empty responses (no props for a game) are treated as success so checkpointing never stalls.
-
-### BetsAPI (team moneyline/spread/totals: 2021-10-19 → 2025-11-11)
-* `unified_odds_ingest.py` fetches daily schedules, maps events to `games`, and writes moneyline, spread, and total markets with `participant_type='team'`.
-* Rate limiting is conservative (1 request every ~0.75–1.0 seconds) to honor BetsAPI’s free-tier guidance.
-
-## Testing & validation
-
-Run the test suite to exercise rate limiting, normalization, and ETL idempotency with fixture payloads:
-```bash
-cd nba_ingest
-pytest
-```
-   - `GET /health` – Simple status probe returning `{ "status": "ok" }`.
-   - `GET /games?date=YYYY-MM-DD` – Returns the day’s games with team info, home win probability from the model, all cached sportsbook markets from `game_odds`, and the best available moneyline price for each side. If cached odds are stale or missing, the API will fetch fresh odds and update the database before responding.
-   - `POST /parlay/estimate` – Accepts a list of parlay legs (with American odds), computes combined hit probability, fair odds, and expected value when offered odds are supplied.
-
-For ad-hoc verification in Postgres:
-```sql
--- Sample join showing stats, odds, and play-by-play on a single game
-SELECT g.id, g.game_date, t_home.name AS home, t_away.name AS away,
-       COUNT(pbp.id) AS pbp_events,
-       COUNT(DISTINCT pg.player_id) AS players_with_stats,
-       COUNT(DISTINCT gm.id) AS odds_rows
-FROM games g
-JOIN teams t_home ON t_home.id = g.home_team_id
-JOIN teams t_away ON t_away.id = g.away_team_id
-LEFT JOIN play_by_play pbp ON pbp.game_id = g.id
-LEFT JOIN player_game_stats pg ON pg.game_id = g.id
-LEFT JOIN odds_markets gm ON gm.event_id = g.id
-WHERE g.game_date = DATE '2021-10-19'
-GROUP BY 1,2,3,4;
-```
-
-## Logging & operations
-
-* CLI commands print per-provider counts, HTTP 429/5xx retries, and current rate-limit pacing every few minutes (configurable via `--log-interval-seconds`).
-* `checkpoints`, `ingestion_runs`, and `ingestion_state` persist discovery + processing status so you can safely resume after API outages or SGO monthly resets.
-* Always pilot a short date window (one week) when onboarding a new provider or markets list. Providers frequently omit certain markets/books for select games; the loaders treat missing markets as informational warnings rather than failures.
-
-With these components, you can continuously ingest NBA schedules, stats, play-by-play, and odds data into a single warehouse that powers downstream analytics and betting products.
-These additions prepare the project for integrating sportsbook lines with the statistical model and lay the groundwork for future betting tools.
-
-## Unified odds and props ingestion
-
-Sports betting data from three providers now lands in one cohesive schema driven by the `leagues`, `teams`, `players`, `games`, `odds_books`, `odds_markets`, and `ingestion_state` tables.
-
-* `leagues` tracks high-level metadata (currently just the NBA) and the provider sport keys used when calling each API.
-* `teams`/`players` store canonical entities with JSON mappings of provider IDs (`provider_team_ids`, `provider_player_ids`).
-* `games` (events) carry the league, season info, start time, and `provider_event_ids` JSON so every provider references the exact same row.
-* `odds_books` deduplicates bookmaker metadata while `odds_markets` stores every snapshot keyed by `(event_id, provider, bookmaker, market_type, participant_type, participant_id, side, line, as_of)`.
-* `ingestion_state` records the last successful date per provider so each worker can resume after failures or quota resets.
-
-### Provider coverage
-
-| Provider          | Scope                                | Window                     | Rate limits |
-|-------------------|--------------------------------------|----------------------------|-------------|
-| SportsGameOdds    | Player props (points/assists/rebounds/threes) | 2021-10-19 → 2023-05-02    | 10 req/min + 2,500 events/month |
-| The Odds API      | Player props (points/assists/rebounds/threes) | 2023-05-03 → 2025-11-11    | 30 req/min |
-| BetsAPI           | Team moneyline, spreads, totals       | 2021-10-19 → 2025-11-11    | Provider throttles (~1–2 req/sec) |
-
-Each loader enforces the documented throttle before every HTTP request so we respect free-plan quotas. When a provider returns partial data (missing books or certain markets) the ingest logs a warning but still marks the day complete so the pipeline remains resumable.
-
-### Running the end-to-end loader
-
-```
-python -m nba_ingest.unified_odds_ingest --start 2021-10-19 --end 2025-11-11
-```
-
-The orchestrator will:
-
-1. Ensure the schema exists (via SQLAlchemy metadata) and create the `NBA` league row if needed.
-2. Run BetsAPI for the requested window first (moneyline/spread/total markets).
-3. Backfill SportsGameOdds props for dates up to 2023-05-02.
-4. Finish with The Odds API historical props for dates on/after 2023-05-03.
-
-Each provider updates its `ingestion_state` row after completing a date so reruns automatically pick up from the next day. Logs include the processed date, number of discovered events, and number of odds rows written to help operators verify coverage. CSV exports or sample validation queries can be added once live API keys are configured, but the tests exercise each loader with fixture responses to guarantee the schema and upserts behave as expected.
-## Hybrid Player Props Ingestion
-
-The repository now ships with an end-to-end pipeline that backfills and maintains historical NBA player props by combining two providers:
-
-* **SportsGameOdds (SGO)** – Covers 2021-10-19 through 2023-05-02. We run a single free-plan account with a hard quota of 2,500 events per calendar month and a rate limit of **10 requests/minute**. Each fetched event counts toward the monthly object quota, so the worker keeps a 50-event buffer and pauses automatically once the quota is nearly exhausted.
-* **The Odds API** – Supplies historical props from 2023-05-03 forward. The historical endpoint enforces **30 requests/minute**, which the worker throttles before every request (discovery and market pulls). The Odds API’s dataset begins on 2023-05-03T05:30:00Z; earlier dates must be handled by SportsGameOdds or skipped.
-
-Because the providers expose different windows, every backfill splits on **2023-05-03** (exclusive lower bound for The Odds API). The CLI automatically routes each date to the correct provider and is safe to resume in-place thanks to checkpoint rows and database upserts.
-
-### Database schema and migrations
-
-Player props live in their own tables (`players`, `events`, `props`, `checkpoints`, `ingestion_runs`). Apply the Alembic migration before running the CLI:
-
-```bash
-alembic upgrade head
-```
-
-The CLI still attempts to create tables opportunistically, but running the migration keeps schema drift under control for future releases.
-
-### Environment configuration
-
-Add the following keys to `.env` (or the process environment). All are required unless a default is noted.
-
-```env
 DATABASE_URL=postgres://user:password@host:5432/dbname
-SGO_API_KEY=...
-SGO_BASE_URL=https://api.sportsgameodds.com
+
+# Ball Don't Lie / nba_api
+
+BALDONTLIE_API_KEY=your_bdl_key_here
+NBA_SEASONS=2021,2022,2023,2024
+
+# SportsGameOdds (player props < 2023-05-03)
+
+SPORTSGAMEODDS_API_KEY=your_sgo_key
+SGO_BASE_URL=[https://api.sportsgameodds.com](https://api.sportsgameodds.com)
 SGO_OBJECTS_PER_MONTH=2500
 SGO_REQS_PER_MIN=10
 SGO_INCLUDE_ALT_LINES=false
-ODDS_API_KEY=...
-ODDS_API_BASE_URL=https://api.the-odds-api.com/v4
+TOS_ACK_SINGLE_ACCOUNT=true
+
+# The Odds API (player props >= 2023-05-03)
+
+ODDS_API_KEY=your_the_odds_api_key
+ODDS_API_BASE_URL=[https://api.the-odds-api.com/v4](https://api.the-odds-api.com/v4)
 ODDS_REQS_PER_MIN=30
 PROP_MARKETS=player_points,player_assists,player_rebounds,player_threes
 REGION=us
+
+# BetsAPI (team odds full window)
+
+BETSAPI_API_KEY=your_betsapi_key
+
+# Hybrid ingest defaults
+
 HISTORICAL_START=2021-10-19
 HISTORICAL_SPLIT=2023-05-03
 HISTORICAL_END=2025-11-11
 DRY_RUN=false
 GLOBAL_MAX_EVENTS=7000
-TOS_ACK_SINGLE_ACCOUNT=true
-```
 
-`PROP_MARKETS` is parsed as CSV, while booleans accept `true/false/1/0`. The SGO worker refuses to run unless `TOS_ACK_SINGLE_ACCOUNT=true` to acknowledge that we are intentionally using a single free-tier account per the provider’s ToS.
+Notes:
 
-### CLI usage
+* `.env` is for local development only and should **not** be committed to Git.
+* If this repo is public, rotate any secrets that were ever committed before you added `.gitignore`.
 
-Run the hybrid ingest from the repository root:
+---
 
-```bash
-python -m nba_ingest.props_hybrid_ingest \
-  --start 2021-10-19 \
-  --end 2025-11-11 \
-  --markets player_points,player_assists,player_rebounds,player_threes \
-  --region us \
-  --resume true
-```
+### 3. Database schema and Alembic migrations
 
-Important behavior:
+The schema is managed by Alembic. The key pieces:
 
-* **Discovery + checkpoints** – Every event is discovered once per provider/date and stored in the `checkpoints` table. Re-running with `--resume true` keeps previously-discovered events and only adds new ones, making the process idempotent.
-* **Rate limiting** – The coordinator enforces the per-provider limits (10 req/min for SGO, 30 req/min for The Odds API) before every HTTP call. 429 responses trigger a 60-second wait with up to five retries; 5xx responses use exponential backoff capped at 64 seconds.
-* **Partial market support** – If a provider returns zero props for a game, the run logs a warning but still marks the checkpoint as done so it will not get stuck.
-* **Logging + reporting** – Every five minutes (configurable via `--log-interval-seconds`) the CLI prints global progress, provider throughput, rate-limit/5xx counters, current Odds API request rate, and the SGO quota estimate. When the run finishes it writes `reports/props_hybrid_ingest_<timestamp>.csv` that captures each checkpoint, outcome, and elapsed processing time.
+* `alembic/env.py` imports:
 
-### Ops tips
+  * `nba_ingest.models.Base.metadata` (core schema)
+  * `nba_ingest.props_models.PropsBase.metadata` (props-specific schema)
+* `alembic/script.py.mako` is the template Alembic uses when generating new migrations.
+* `alembic/versions/<hash>_initial_schema.py` is the baseline migration, created after we “nuked” the old chain and unified the schema.
 
-* **Pilot before the full backfill** – Run a small window (for example, one week) before attempting the entire historical range to verify market coverage and bookmaker availability. Not every market will be present for every game; this variability is normal and the pipeline simply stores whatever is available.
-* **Monthly SGO quota resets** – When the `SGO_OBJECTS_PER_MONTH` quota is nearly exhausted the SGO worker stops claiming new checkpoints automatically. Resume the run after the provider resets usage by re-running the same CLI command with `--resume true`; the pending SGO checkpoints remain queued in the database.
-* **Dry runs** – Set `DRY_RUN=true` (or pass `--dry-run true`) to validate discovery, checkpointing, and logging without making provider API calls.
-* **Safety caps** – `GLOBAL_MAX_EVENTS` limits how many checkpoints the workers claim in a single invocation to guard against runaway costs. If the cap triggers the CLI prints a message explaining how to resume.
+To apply the schema to your Postgres database:
 
-When deploying this ingestion process in production, ensure that Alembic migrations run before each release, that environment variables remain secret, and that you track monthly SGO usage so you can plan resumptions around the free-plan quota reset.
+* python -m alembic upgrade head
+
+This will create all tables in the `public` schema of the database pointed at by `DATABASE_URL`.
+
+#### Making schema changes
+
+If you change `models.py` or `props_models.py` and want to evolve the DB:
+
+1. Make your model changes.
+
+2. Generate a migration:
+
+   * python -m alembic revision --autogenerate -m "describe your change"
+
+3. Apply it:
+
+   * python -m alembic upgrade head
+
+Alembic will diff the current DB schema versus your SQLAlchemy metadata and generate upgrade/downgrade operations.
+
+---
+
+### 4. Dev helper: resetting the schema (nuke & pave)
+
+For local development, you may want to completely reset your Postgres schema and reapply migrations. `reset_schema.py` does that for the `public` schema:
+
+* Drops `public` with `CASCADE`
+* Recreates `public`
+* Restores basic grants
+
+Usage (dev only – destructive):
+
+* python reset_schema.py
+* python -m alembic upgrade head
+
+Do **not** run this against any environment you care about; it will wipe all tables in the `public` schema.
+
+---
+
+## Canonical schema highlights
+
+Core warehouse entities (from `models.py` and `props_models.py`):
+
+* leagues – High-level metadata (NBA, etc.) and provider sport keys.
+* teams – Canonical team entities, with normalized names and JSON maps of provider IDs (`provider_team_ids`).
+* players – Canonical players with normalized names, provider IDs, and basic bio info.
+* games – One row per NBA game, with home/away foreign keys, season info, provider event IDs, and date/time.
+* ingestion_state / ingestion_runs / checkpoints – Tables for tracking resumable ingestion jobs per provider and date.
+* odds_books – Bookmaker metadata (name, provider key, etc.).
+* odds_markets / game_odds (depending on naming in your version) – Unified table(s) for team odds and props (provider, bookmaker, market type, participant type, line, price, timestamp).
+* play_by_play – Full nba_api play-by-play logs keyed by game and event index.
+* player_game_stats – Traditional box score stats keyed by game + player.
+* player_game_advanced – Advanced stats keyed by game + player.
+* props_players – Props-specific player identity table, separate from the canonical `players` table to avoid duplicate metadata conflicts.
+* props – Individual player props (points, assists, rebounds, threes, etc.), keyed to `props_players` and games.
+
+All providers write into this shared schema so rows from different APIs reference the same `teams`, `players`, and `games` wherever possible. Props are separated into `props_players` / `props` to keep their life cycle independent while still linking to canonical games.
+
+---
+
+## How to “start the machine” (end-to-end ingestion)
+
+Once your DB schema is applied and env vars are set, you can run the ingestion pipelines.
+
+### 1. Ball Don't Lie schedules + stats
+
+Populates leagues, teams, games, and player-level stats:
+
+* python -m nba_ingest.balldontlie_ingest --start 2021-10-19 --end 2025-11-11
+
+This script:
+
+* Syncs `teams`, `games`, `player_game_stats`, and `player_game_advanced`.
+* Resolves entities by provider IDs first, then falls back to normalized names.
+* Is idempotent (safe to re-run).
+
+### 2. nba_api mapping + play-by-play
+
+Maps `nba_game_id` onto canonical games and loads full play-by-play logs:
+
+* python -m nba_ingest.nba_api_ingest_pbp --start 2021-10-19 --end 2025-11-11 --delay 1.0
+
+This script:
+
+* Finds each game in `games` via home/away teams + date.
+* Fills in `nba_game_id`.
+* Writes play-by-play rows keyed by `(game_id, event_num)`.
+* Uses a delay to respect `nba_api`’s informal rate limits.
+
+### 3. Team odds + player props (unified orchestrator)
+
+Runs BetsAPI, SportsGameOdds, and The Odds API in one shot, with resumable checkpoints:
+
+* python -m nba_ingest.unified_odds_ingest --start 2021-10-19 --end 2025-11-11
+
+Internally, the orchestrator:
+
+1. Runs BetsAPI for team markets (moneyline, spread, totals) across the full window.
+2. Uses SportsGameOdds for player props from 2021-10-19 to 2023-05-02.
+3. Uses The Odds API for player props from 2023-05-03 onward.
+
+It records progress per provider/date in `ingestion_state` and related tables, so re-running will continue from the next incomplete checkpoint instead of starting over.
+
+---
+
+## Unified ETL modules (per provider)
+
+Each provider also has its own dedicated module if you want to run things more granularly.
+
+1. Ball Don't Lie (teams, games, stats)
+
+   * python -m nba_ingest.balldontlie_ingest
+     Syncs core team/game/player box score and advanced stats into the canonical schema.
+
+2. NBA API scoreboard + play-by-play
+
+   * python -m nba_ingest.nba_api_ingest_pbp --start 2021-10-19 --end 2025-11-11 --delay 1.0
+
+3. The Odds API team odds + player props
+
+   * python -m nba_ingest.odds_api_ingest --start 2023-05-03 --end 2023-06-30 --markets player_points,player_assists
+
+   Historical snapshots are taken at a canonical timestamp (default 12:00:00Z). Results are normalized into `games`, odds books/markets, and props tables.
+
+4. SportsGameOdds player props
+
+   * python -m nba_ingest.sgo_ingest --start 2021-10-19 --end 2023-05-02 --markets player_points,player_rebounds
+
+   This maps SGO events to `games`, writes provider event IDs, and stores props snapshots in the unified odds/props tables (or directly in `props` depending on the version you’re running).
+
+5. Hybrid props worker
+
+   * python -m nba_ingest.props_hybrid_ingest --start 2021-10-19 --end 2025-11-11 --markets player_points,player_assists,player_rebounds,player_threes --region us --resume true
+
+   This is a dedicated, resumable worker for player props that splits the date range at 2023-05-03 and uses SGO vs The Odds API accordingly.
+
+---
+
+## Hybrid player props ingestion details
+
+The hybrid props pipeline combines:
+
+* SportsGameOdds (SGO):
+
+  * Coverage: 2021-10-19 → 2023-05-02
+  * Rate limit: 10 requests/minute
+  * Quota: ~2,500 events/month on free tier
+* The Odds API:
+
+  * Coverage: 2023-05-03 → 2025-11-11
+  * Rate limit: 30 requests/minute
+
+Key behavior:
+
+* Dates before 2023-05-03 are handled by SGO; dates on or after 2023-05-03 are handled by The Odds API.
+* Checkpoints are stored per provider/date so you can stop and resume runs with `--resume true`.
+* Rate limits are enforced in the client code with retries for 429/5xx responses.
+* Missing markets or books are treated as warnings, not hard failures, to keep the pipeline moving.
+
+Props live in dedicated tables:
+
+* `props_players` – Identity table for props-specific players.
+* `props` – Individual player props rows, with foreign keys to `props_players` and games.
+* Checkpoint and ingestion run tables – Track discovery and processing status for resumability.
+
+---
+
+## Provider coverage (high-level)
+
+Sports betting data from three providers lands in the unified schema:
+
+* SportsGameOdds
+
+  * Scope: Player props (points, assists, rebounds, threes)
+  * Window: 2021-10-19 → 2023-05-02
+  * Limits: 10 req/min, 2,500 events/month
+
+* The Odds API
+
+  * Scope: Player props (points, assists, rebounds, threes)
+  * Window: 2023-05-03 → 2025-11-11
+  * Limits: 30 req/min
+
+* BetsAPI
+
+  * Scope: Team moneyline, spreads, totals
+  * Window: 2021-10-19 → 2025-11-11
+  * Limits: Provider-specific, conservatively throttled in code (~1–2 req/sec)
+
+Each loader updates `ingestion_state` and related tables so you always know which dates/providers are complete and which still need work.
+
+---
+
+## Testing and validation
+
+Run tests from the `nba_ingest` directory:
+
+* cd nba_ingest
+* pytest
+
+For ad-hoc validation in SQL, you can join games, stats, play-by-play, and odds. Example pattern:
+
+* Count PBP events per game.
+* Count number of players with stats per game.
+* Count odds rows per game for a given provider/market.
+
+This helps you sanity-check data coverage before building downstream models.
+
+---
+
+## Logging and operations
+
+* CLI commands log:
+
+  * Number of events/games fetched
+  * Number of odds/props rows written
+  * HTTP errors and retry behavior
+  * Current rate-limit pacing (especially for SGO and The Odds API)
+
+* Checkpoint tables (`checkpoints`, `ingestion_runs`, `ingestion_state`) let you:
+
+  * Resume after failures or API quota resets.
+  * Inspect which dates/providers were processed successfully.
+  * Limit backfills via configs like `GLOBAL_MAX_EVENTS`.
+
+Operational tips:
+
+* Start with a small date range (e.g., one week) when wiring up a new provider or market set.
+* For SGO free tier, monitor monthly usage and use `--resume true` after the quota resets.
+* Use `reset_schema.py` only in development when you want a clean slate; always follow it with `python -m alembic upgrade head`.
+
+---
+
+## Local dev workflow (summary)
+
+1. Clone repo.
+2. At repo root:
+
+   * python -m venv .venv
+   * ..venv\Scripts\Activate.ps1 (on Windows) or source .venv/bin/activate (macOS/Linux)
+   * python -m pip install -r nba_ingest\requirements.txt
+3. Create `nba_ingest/.env` with `DATABASE_URL` and API keys.
+4. Apply migrations:
+
+   * python -m alembic upgrade head
+5. Run ingestion for a small test range (e.g., 7 days) to validate.
+6. For schema resets in dev:
+
+   * python reset_schema.py
+   * python -m alembic upgrade head
