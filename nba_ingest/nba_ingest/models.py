@@ -1,162 +1,372 @@
-"""SQLAlchemy models for NBA data sourced from Ball Don't Lie."""
+"""Unified SQLAlchemy ORM models for the NBA ingestion warehouse."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import (
-    Boolean,
-    Column,
+    BigInteger,
+    CheckConstraint,
     Date,
     DateTime,
-    Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
-    BigInteger,
+    Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, synonym
 
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    """Declarative base shared by all warehouse tables."""
 
 
-class NBATeam(Base):
-    __tablename__ = "nba_teams"
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(element, compiler, **kw):  # pragma: no cover - dialect shim
+    return "JSON"
 
-    id = Column(Integer, primary_key=True)
-    abbreviation = Column(String(10), nullable=False)
-    full_name = Column(String(100), nullable=False)
-    city = Column(String(100))
-    conference = Column(String(20))
-    division = Column(String(50))
 
-    home_games = relationship(
-        "NBAGame",
-        back_populates="home_team",
-        foreign_keys="NBAGame.home_team_id",
-        cascade="all, delete-orphan",
+BIGINT_PK = BigInteger().with_variant(Integer, "sqlite")
+
+
+class League(Base):
+    """Top-level leagues such as the NBA."""
+
+    __tablename__ = "leagues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    provider_sport_keys: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
     )
-    visitor_games = relationship(
-        "NBAGame",
-        back_populates="visitor_team",
-        foreign_keys="NBAGame.visitor_team_id",
-        cascade="all, delete-orphan",
+
+    teams: Mapped[list["Team"]] = relationship("Team", back_populates="league")
+    players: Mapped[list["Player"]] = relationship("Player", back_populates="league")
+    events: Mapped[list["Game"]] = relationship("Game", back_populates="league")
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    league_id: Mapped[int | None] = mapped_column(ForeignKey("leagues.id"))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    short_name: Mapped[str | None] = mapped_column(String(128))
+    abbrev: Mapped[str] = mapped_column("abbreviation", String(10), nullable=False)
+    city: Mapped[str | None] = mapped_column(String(255))
+    conference: Mapped[str | None] = mapped_column(String(32))
+    division: Mapped[str | None] = mapped_column(String(32))
+    bdl_team_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    nba_team_id: Mapped[str | None] = mapped_column(String(32), unique=True)
+    canonical_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    provider_team_ids: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    abbreviation = synonym("abbrev")
+
+    league: Mapped[League | None] = relationship("League", back_populates="teams")
+    home_games: Mapped[list[Game]] = relationship(
+        "Game", back_populates="home_team", foreign_keys="Game.home_team_id"
     )
-
-
-class NBAGame(Base):
-    __tablename__ = "nba_games"
-
-    id = Column(BigInteger, primary_key=True)
-    season = Column(Integer, nullable=False)
-    date = Column(Date, nullable=False)
-    datetime = Column(DateTime(timezone=True))
-    status = Column(String(50), nullable=False)
-    period = Column(Integer, nullable=False)
-    time = Column(String(50))
-    postseason = Column(Boolean, nullable=False)
-    home_team_id = Column(Integer, ForeignKey("nba_teams.id"), nullable=False)
-    visitor_team_id = Column(Integer, ForeignKey("nba_teams.id"), nullable=False)
-    home_team_score = Column(Integer, nullable=False)
-    visitor_team_score = Column(Integer, nullable=False)
-    home_q1 = Column(Integer)
-    home_q2 = Column(Integer)
-    home_q3 = Column(Integer)
-    home_q4 = Column(Integer)
-    home_ot1 = Column(Integer)
-    home_ot2 = Column(Integer)
-    home_ot3 = Column(Integer)
-    home_timeouts_remaining = Column(Integer)
-    home_in_bonus = Column(Boolean)
-    visitor_q1 = Column(Integer)
-    visitor_q2 = Column(Integer)
-    visitor_q3 = Column(Integer)
-    visitor_q4 = Column(Integer)
-    visitor_ot1 = Column(Integer)
-    visitor_ot2 = Column(Integer)
-    visitor_ot3 = Column(Integer)
-    visitor_timeouts_remaining = Column(Integer)
-    visitor_in_bonus = Column(Boolean)
-
-    home_team = relationship("NBATeam", foreign_keys=[home_team_id], back_populates="home_games")
-    visitor_team = relationship("NBATeam", foreign_keys=[visitor_team_id], back_populates="visitor_games")
-    advanced_stats = relationship(
-        "NBAPlayerAdvancedStats",
-        back_populates="game",
-        cascade="all, delete-orphan",
-    )
-    odds = relationship(
-        "NBAGameOdds",
-        back_populates="game",
-        cascade="all, delete-orphan",
+    away_games: Mapped[list[Game]] = relationship(
+        "Game", back_populates="away_team", foreign_keys="Game.away_team_id"
     )
 
     __table_args__ = (
-        Index("ix_nba_games_season_date", "season", "date"),
-        Index("ix_nba_games_home_visitor", "home_team_id", "visitor_team_id"),
+        UniqueConstraint("bdl_team_id", name="uq_teams_bdl_team_id"),
+        UniqueConstraint("nba_team_id", name="uq_teams_nba_team_id"),
+        UniqueConstraint("canonical_name", name="uq_teams_canonical_name"),
     )
 
 
-class NBAPlayerAdvancedStats(Base):
-    __tablename__ = "nba_player_advanced_stats"
+class Player(Base):
+    __tablename__ = "players"
 
-    id = Column(BigInteger, primary_key=True)
-    game_id = Column(BigInteger, ForeignKey("nba_games.id"), nullable=False)
-    team_id = Column(Integer, ForeignKey("nba_teams.id"), nullable=False)
-    player_id = Column(BigInteger, nullable=False)
-    season = Column(Integer, nullable=False)
-    postseason = Column(Boolean, nullable=False)
-    pie = Column(Float)
-    pace = Column(Float)
-    assist_percentage = Column(Float)
-    assist_ratio = Column(Float)
-    assist_to_turnover = Column(Float)
-    defensive_rating = Column(Float)
-    defensive_rebound_percentage = Column(Float)
-    effective_field_goal_percentage = Column(Float)
-    net_rating = Column(Float)
-    offensive_rating = Column(Float)
-    offensive_rebound_percentage = Column(Float)
-    rebound_percentage = Column(Float)
-    true_shooting_percentage = Column(Float)
-    turnover_ratio = Column(Float)
-    usage_percentage = Column(Float)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    league_id: Mapped[int | None] = mapped_column(ForeignKey("leagues.id"))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"))
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    bdl_player_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    nba_player_id: Mapped[str | None] = mapped_column(String(32), unique=True)
+    position: Mapped[str | None] = mapped_column(String(16))
+    height: Mapped[str | None] = mapped_column(String(32))
+    weight: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    provider_player_ids: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    game = relationship("NBAGame", back_populates="advanced_stats")
-    team = relationship("NBATeam")
+    league: Mapped[League | None] = relationship("League", back_populates="players")
+    team: Mapped[Team | None] = relationship("Team")
+    __table_args__ = (
+        UniqueConstraint("bdl_player_id", name="uq_players_bdl_player_id"),
+        UniqueConstraint("nba_player_id", name="uq_players_nba_player_id"),
+    )
+
+
+class Game(Base):
+    __tablename__ = "games"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    league_id: Mapped[int | None] = mapped_column(ForeignKey("leagues.id"))
+    game_date: Mapped[Date] = mapped_column(Date, nullable=False)
+    season: Mapped[str | None] = mapped_column(String(16))
+    season_type: Mapped[str | None] = mapped_column(String(16))
+    home_team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    away_team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    home_score: Mapped[int | None] = mapped_column(Integer)
+    away_score: Mapped[int | None] = mapped_column(Integer)
+    start_time_utc: Mapped[datetime | None] = mapped_column(
+        "tipoff_datetime_utc", DateTime(timezone=True)
+    )
+    bdl_game_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    nba_game_id: Mapped[str | None] = mapped_column(String(32), unique=True)
+    odds_api_event_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    sgo_event_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    provider_event_ids: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    tipoff_datetime_utc = synonym("start_time_utc")
+    league: Mapped[League | None] = relationship("League", back_populates="events")
+    home_team: Mapped[Team] = relationship(
+        Team, foreign_keys=[home_team_id], back_populates="home_games"
+    )
+    away_team: Mapped[Team] = relationship(
+        Team, foreign_keys=[away_team_id], back_populates="away_games"
+    )
+    player_stats: Mapped[list[PlayerGameStat]] = relationship(
+        "PlayerGameStat", back_populates="game"
+    )
+    advanced_stats: Mapped[list[PlayerGameAdvanced]] = relationship(
+        "PlayerGameAdvanced", back_populates="game"
+    )
+    play_by_play_events: Mapped[list[PlayByPlayEvent]] = relationship(
+        "PlayByPlayEvent", back_populates="game"
+    )
+    odds: Mapped[list[GameOdds]] = relationship("GameOdds", back_populates="game")
 
     __table_args__ = (
-        Index("ix_nba_player_adv_stats_season_team", "season", "team_id"),
-        Index("ix_nba_player_adv_stats_game_team", "game_id", "team_id"),
+        UniqueConstraint("bdl_game_id", name="uq_games_bdl_game_id"),
+        UniqueConstraint("nba_game_id", name="uq_games_nba_game_id"),
+        UniqueConstraint("odds_api_event_id", name="uq_games_odds_event_id"),
+        UniqueConstraint("sgo_event_id", name="uq_games_sgo_event_id"),
+        Index("ix_games_date_home_away", "game_date", "home_team_id", "away_team_id"),
     )
 
 
-class NBAGameOdds(Base):
-    __tablename__ = "nba_game_odds"
+class PlayerGameStat(Base):
+    __tablename__ = "player_game_stats"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    game_id = Column(BigInteger, ForeignKey("nba_games.id"), nullable=False, index=True)
-    vendor = Column(String(50), nullable=False)
-    line_type = Column(String(20), nullable=False)
-    home_team_price = Column(Integer)
-    away_team_price = Column(Integer)
-    spread_points = Column(Float)
-    total_points = Column(Float)
-    over_price = Column(Integer)
-    under_price = Column(Integer)
-    last_update = Column(DateTime(timezone=True), nullable=False)
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    minutes: Mapped[str | None] = mapped_column(String(16))
+    points: Mapped[int | None] = mapped_column(Integer)
+    rebounds: Mapped[int | None] = mapped_column(Integer)
+    assists: Mapped[int | None] = mapped_column(Integer)
+    blocks: Mapped[int | None] = mapped_column(Integer)
+    steals: Mapped[int | None] = mapped_column(Integer)
+    fg_attempts: Mapped[int | None] = mapped_column(Integer)
+    fg_made: Mapped[int | None] = mapped_column(Integer)
+    three_attempts: Mapped[int | None] = mapped_column(Integer)
+    three_made: Mapped[int | None] = mapped_column(Integer)
+    ft_attempts: Mapped[int | None] = mapped_column(Integer)
+    ft_made: Mapped[int | None] = mapped_column(Integer)
+    turnovers: Mapped[int | None] = mapped_column(Integer)
+    plus_minus: Mapped[int | None] = mapped_column(Integer)
+    raw_json: Mapped[dict | None] = mapped_column(JSONB)
 
-    game = relationship("NBAGame", back_populates="odds")
+    game: Mapped[Game] = relationship("Game", back_populates="player_stats")
+    player: Mapped[Player] = relationship("Player")
+    team: Mapped[Team] = relationship("Team")
 
     __table_args__ = (
-        Index("ix_nba_game_odds_game_vendor_type", "game_id", "vendor", "line_type"),
-        Index("ix_nba_game_odds_game_type", "game_id", "line_type"),
+        UniqueConstraint("game_id", "player_id", name="uq_player_game_stats_game_player"),
     )
+
+
+class PlayerGameAdvanced(Base):
+    __tablename__ = "player_game_advanced"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    minutes: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    off_rating: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    def_rating: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    usage_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    ts_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    offensive_reb_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    defensive_reb_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    assist_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    steal_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    block_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    raw_json: Mapped[dict | None] = mapped_column(JSONB)
+
+    game: Mapped[Game] = relationship("Game", back_populates="advanced_stats")
+    player: Mapped[Player] = relationship("Player")
+    team: Mapped[Team] = relationship("Team")
+
+    __table_args__ = (
+        UniqueConstraint("game_id", "player_id", name="uq_player_game_adv_game_player"),
+    )
+
+
+class PlayByPlayEvent(Base):
+    __tablename__ = "play_by_play"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    event_num: Mapped[int] = mapped_column(Integer, nullable=False)
+    period: Mapped[int | None] = mapped_column(Integer)
+    clock: Mapped[str | None] = mapped_column(String(16))
+    event_type: Mapped[str | None] = mapped_column(String(64))
+    description: Mapped[str | None] = mapped_column(Text)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"))
+    player1_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"))
+    player2_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"))
+    player3_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"))
+    home_score: Mapped[int | None] = mapped_column(Integer)
+    away_score: Mapped[int | None] = mapped_column(Integer)
+    raw_json: Mapped[dict | None] = mapped_column(JSONB)
+
+    game: Mapped[Game] = relationship("Game", back_populates="play_by_play_events")
+
+    __table_args__ = (
+        UniqueConstraint("game_id", "event_num", name="uq_pbp_game_event"),
+    )
+
+
+class GameOdds(Base):
+    __tablename__ = "game_odds"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    bookmaker_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    market_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    line_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    participant_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    participant_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    participant_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"))
+    participant_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"))
+    side: Mapped[str | None] = mapped_column(String(32))
+    line: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    price: Mapped[int | None] = mapped_column(Integer)
+    last_update_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    snapshot_ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    extra: Mapped[dict | None] = mapped_column(JSONB)
+
+    game: Mapped[Game] = relationship("Game", back_populates="odds")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "game_id",
+            "provider",
+            "bookmaker_key",
+            "market_key",
+            "participant_type",
+            "participant_name",
+            "side",
+            "line",
+            "snapshot_ts",
+            name="uq_game_odds_snapshot",
+        ),
+        CheckConstraint(
+            "(participant_type = 'team' AND participant_team_id IS NOT NULL AND participant_player_id IS NULL) "
+            "OR (participant_type = 'player' AND participant_player_id IS NOT NULL AND participant_team_id IS NULL) "
+            "OR (participant_type NOT IN ('team','player') AND participant_team_id IS NULL AND participant_player_id IS NULL)",
+            name="ck_game_odds_participant",
+        ),
+    )
+
+
+class OddsBook(Base):
+    __tablename__ = "odds_books"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    provider_ids: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    markets: Mapped[list["OddsMarket"]] = relationship("OddsMarket", back_populates="bookmaker")
+
+
+class OddsMarket(Base):
+    __tablename__ = "odds_markets"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    market_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="full_game")
+    participant_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    participant_id: Mapped[int | None] = mapped_column(Integer)
+    bookmaker_id: Mapped[int] = mapped_column(ForeignKey("odds_books.id"), nullable=False)
+    line: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    price: Mapped[int | None] = mapped_column(Integer)
+    side: Mapped[str | None] = mapped_column(String(32))
+    provider_raw: Mapped[dict | None] = mapped_column(JSONB)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    event: Mapped[Game] = relationship("Game")
+    bookmaker: Mapped[OddsBook] = relationship("OddsBook", back_populates="markets")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "provider",
+            "bookmaker_id",
+            "market_type",
+            "participant_type",
+            "participant_id",
+            "side",
+            "line",
+            "as_of",
+            name="uq_odds_markets_snapshot",
+        ),
+    )
+
+
+class IngestionState(Base):
+    __tablename__ = "ingestion_state"
+
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_successful_date: Mapped[Date | None] = mapped_column(Date)
 
 
 __all__ = [
     "Base",
-    "NBATeam",
-    "NBAGame",
-    "NBAPlayerAdvancedStats",
-    "NBAGameOdds",
+    "League",
+    "Team",
+    "Player",
+    "Game",
+    "PlayerGameStat",
+    "PlayerGameAdvanced",
+    "PlayByPlayEvent",
+    "GameOdds",
+    "OddsBook",
+    "OddsMarket",
+    "IngestionState",
 ]
