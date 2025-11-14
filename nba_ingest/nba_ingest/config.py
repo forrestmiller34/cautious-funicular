@@ -18,6 +18,23 @@ class Settings:
     seasons: List[int]
 
 
+@dataclass(slots=True)
+class InjuriesSettings:
+    """Configuration for the NBA injuries RapidAPI feed."""
+
+    database_url: str
+    api_key: str
+    host: str
+    base_url: str
+
+
+def _require_env(key: str) -> str:
+    value = os.environ.get(key)
+    if not value:
+        raise RuntimeError(f"Missing {key} environment variable.")
+    return value
+
+
 def _default_seasons(num_seasons: int = 4) -> List[int]:
     current_year = datetime.utcnow().year
     # NBA seasons span two calendar years, but API expects the starting year.
@@ -29,13 +46,8 @@ def load_settings() -> Settings:
 
     load_dotenv()
 
-    api_key = os.environ.get("BALDONTLIE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing BALDONTLIE_API_KEY environment variable.")
-
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("Missing DATABASE_URL environment variable.")
+    api_key = _require_env("BALDONTLIE_API_KEY")
+    database_url = _require_env("DATABASE_URL")
 
     seasons_raw = os.environ.get("NBA_SEASONS")
     if seasons_raw:
@@ -49,4 +61,27 @@ def load_settings() -> Settings:
     return Settings(api_key=api_key, database_url=database_url, seasons=seasons)
 
 
-__all__ = ["Settings", "load_settings"]
+def load_injuries_settings() -> InjuriesSettings:
+    """Load configuration for the NBA injuries ingestion."""
+
+    load_dotenv()
+    database_url = _require_env("DATABASE_URL")
+    api_key = _require_env("NBA_INJURIES_RAPIDAPI_KEY")
+    host = _require_env("NBA_INJURIES_RAPIDAPI_HOST")
+    base_url = os.environ.get(
+        "NBA_INJURIES_BASE_URL", "https://nba-injuries-reports.p.rapidapi.com"
+    )
+    return InjuriesSettings(
+        database_url=database_url,
+        api_key=api_key,
+        host=host,
+        base_url=base_url.rstrip("/"),
+    )
+
+
+__all__ = [
+    "Settings",
+    "InjuriesSettings",
+    "load_settings",
+    "load_injuries_settings",
+]
