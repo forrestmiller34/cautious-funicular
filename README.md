@@ -1,7 +1,3 @@
-Here’s a full updated `README.md` you can paste in **as-is** (no code boxes).
-
----
-
 # NBA Ingestion Project
 
 A cohesive ingestion stack for NBA analytics. The repository unifies multiple public APIs—Ball Don't Lie, `nba_api`, SportsGameOdds, The Odds API, and BetsAPI—into a single PostgreSQL schema so every team, player, game, and odds snapshot references shared IDs. 
