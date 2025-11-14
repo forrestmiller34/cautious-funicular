@@ -8,10 +8,17 @@ from sqlalchemy.orm import sessionmaker
 
 from nba_ingest.models import Base, Game, OddsMarket
 from nba_ingest.odds_helpers import get_or_create_league
+from nba_ingest.odds_queries import (
+    EventCount,
+    OddsBreakdown,
+    count_events_by_date,
+    list_event_odds_breakdown,
+)
 from nba_ingest.unified_odds_ingest import (
     ingest_betsapi_team_odds,
     ingest_odds_api_player_props,
     ingest_sgo_player_props,
+    summarize_stats,
 )
 
 
@@ -164,6 +171,7 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
         league_id = league.id
 
     ingest_betsapi_team_odds(
+    bets_stats = ingest_betsapi_team_odds(
         session_factory=SessionLocal,
         league_id=league_id,
         client=_FakeBetsApiClient(),
@@ -172,6 +180,7 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
     )
 
     ingest_sgo_player_props(
+    sgo_stats = ingest_sgo_player_props(
         session_factory=SessionLocal,
         league_id=league_id,
         client=_FakeSgoClient(),
@@ -181,6 +190,7 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
     )
 
     ingest_odds_api_player_props(
+    odds_stats = ingest_odds_api_player_props(
         session_factory=SessionLocal,
         league_id=league_id,
         client=_FakeOddsApiClient(),
@@ -197,3 +207,31 @@ def test_unified_pipeline_writes_markets_across_all_providers() -> None:
     assert game_count >= 2
     assert {"betsapi", "sportsgameodds", "the_odds_api"}.issubset(providers)
     assert len(odds_rows) >= 8
+
+    counts = count_events_by_date(session, date(2021, 10, 19), date(2023, 5, 3))
+    assert any(isinstance(entry, EventCount) for entry in counts)
+    assert any(entry.total_events > 0 for entry in counts)
+
+    breakdown = list_event_odds_breakdown(session, odds_rows[0].event_id)
+    assert any(isinstance(item, OddsBreakdown) for item in breakdown)
+    assert any(item.provider == "sportsgameodds" for item in breakdown)
+
+    assert bets_stats.provider == "betsapi"
+    assert sgo_stats.provider == "sportsgameodds"
+    assert odds_stats.provider == "the_odds_api"
+    assert "betsapi" in summarize_stats(bets_stats)
+    assert bets_stats.odds_rows > 0
+
+
+def test_betsapi_dry_run_skips_writes() -> None:
+    SessionLocal = sessionmaker()
+    stats = ingest_betsapi_team_odds(
+        session_factory=SessionLocal,
+        league_id=0,
+        client=_FakeBetsApiClient(),
+        start_date=date(2021, 10, 19),
+        end_date=date(2021, 10, 19),
+        dry_run=True,
+    )
+    assert stats.events_seen == 1
+    assert stats.odds_rows > 0

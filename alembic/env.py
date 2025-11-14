@@ -19,6 +19,7 @@ if config.config_ini_section:
 
 
 target_metadata = [PropsBase.metadata, Base.metadata]
+target_metadata = PropsBase.metadata
 
 
 def run_migrations_offline() -> None:

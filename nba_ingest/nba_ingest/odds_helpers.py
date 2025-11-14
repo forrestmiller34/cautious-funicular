@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 import re
 import unicodedata
 from typing import Any
@@ -290,6 +291,42 @@ def get_or_create_bookmaker(
     return bookmaker
 
 
+def _normalize_numeric(value: float | Decimal | None) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, Decimal):
+        normalized = value
+    else:
+        normalized = Decimal(str(value))
+    return f"{normalized:.3f}"
+
+
+def _build_identity_key(
+    *,
+    event_id: int,
+    provider: str,
+    bookmaker_id: int,
+    market_type: str,
+    scope: str,
+    participant_type: str,
+    participant_id: int | None,
+    side: str | None,
+    line: float | Decimal | None,
+) -> str:
+    parts = [
+        str(event_id),
+        provider,
+        str(bookmaker_id),
+        market_type,
+        scope,
+        participant_type,
+        str(participant_id) if participant_id is not None else "null",
+        (side or "null").lower(),
+        _normalize_numeric(line),
+    ]
+    return "|".join(parts)
+
+
 def upsert_odds_market(
     session: Session,
     *,
@@ -306,6 +343,17 @@ def upsert_odds_market(
     provider_raw: dict | None,
     as_of: datetime,
 ) -> None:
+    identity_key = _build_identity_key(
+        event_id=event_id,
+        provider=provider,
+        bookmaker_id=bookmaker_id,
+        market_type=market_type,
+        scope=scope,
+        participant_type=participant_type,
+        participant_id=participant_id,
+        side=side,
+        line=line,
+    )
     stmt = pg_insert(OddsMarket).values(
         event_id=event_id,
         provider=provider,
@@ -323,6 +371,18 @@ def upsert_odds_market(
     stmt = stmt.on_conflict_do_update(
         constraint="uq_odds_markets_snapshot",
         set_={"price": stmt.excluded.price, "provider_raw": stmt.excluded.provider_raw},
+        identity_key=identity_key,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_odds_markets_identity",
+        set_={
+            "line": stmt.excluded.line,
+            "price": stmt.excluded.price,
+            "side": stmt.excluded.side,
+            "provider_raw": stmt.excluded.provider_raw,
+            "as_of": stmt.excluded.as_of,
+            "identity_key": stmt.excluded.identity_key,
+        },
     )
     session.execute(stmt)
 
