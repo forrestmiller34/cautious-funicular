@@ -57,7 +57,7 @@ Create and activate a virtual environment at the repo root, then install depende
 Windows (PowerShell):
 
 * python -m venv .venv
-* ..venv\Scripts\Activate.ps1
+* .venv\Scripts\Activate.ps1
 * python -m pip install -r nba_ingest\requirements.txt
 
 macOS / Linux:
