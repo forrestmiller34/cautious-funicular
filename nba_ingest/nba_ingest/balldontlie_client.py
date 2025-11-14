@@ -24,17 +24,34 @@ class BallDontLieClient:
     def _request(self, method: str, path: str, params: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         url = f"{self.base_url}{path}"
         backoff = 0.3
-        while True:
+        max_attempts = 5
+        attempt = 0
+
+    while True:
+        try:
             response = self.session.request(method, url, params=params, timeout=self.timeout)
-            if response.status_code == 429:
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 5.0)
-                continue
-            if response.status_code != 200:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            attempt += 1
+            if attempt >= max_attempts:
                 raise RuntimeError(
-                    f"BallDontLie API request failed ({response.status_code}): {response.text}"
-                )
-            return response.json()
+                    f"BallDontLie API request failed after {attempt} attempts: {exc}"
+                ) from exc
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 5.0)
+            continue
+
+        if response.status_code == 429:
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 5.0)
+            continue
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"BallDontLie API request failed ({response.status_code}): {response.text}"
+            )
+
+        return response.json()
+
 
     def _paginate(self, path: str, params: Optional[Dict[str, object]] = None) -> Iterator[Dict[str, object]]:
         params = dict(params or {})
