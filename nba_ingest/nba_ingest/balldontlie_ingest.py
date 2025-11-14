@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterable, Sequence
 
 from sqlalchemy import select
@@ -21,6 +21,10 @@ from .models import (
     Team,
 )
 from .normalization import canonicalize_player_name, canonicalize_team_name, season_label
+
+
+def log(message: str) -> None:
+    print(f"[BDL] {message}", flush=True)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -236,9 +240,11 @@ def _upsert_player_advanced(session: Session, stat: dict) -> None:
 
 
 def ingest_teams(client: BallDontLieClient, session: Session) -> int:
+    log("Fetching team directory from BallDontLie...")
     teams = client.list_teams()
     for team in teams:
         _upsert_team(session, team)
+    log(f"Ingested/updated {len(teams)} teams.")
     return len(teams)
 
 
@@ -249,9 +255,14 @@ def ingest_games(
     postseason: bool | None,
 ) -> int:
     count = 0
-    for game in client.list_games_for_seasons(seasons, postseason=postseason):
-        if _ensure_game(session, game):
-            count += 1
+    for season in list(seasons):
+        log(f"Processing season {season} (postseason={postseason}) for games...")
+        season_count = 0
+        for game in client.list_games_for_seasons([season], postseason=postseason):
+            if _ensure_game(session, game):
+                season_count += 1
+        log(f"Season {season}: ingested {season_count} games.")
+        count += season_count
     return count
 
 
@@ -262,9 +273,16 @@ def ingest_player_stats(
     postseason: bool | None,
 ) -> int:
     count = 0
-    for stat in client.list_stats_for_seasons(seasons, postseason=postseason):
-        _upsert_player_stat(session, stat)
-        count += 1
+    for season in list(seasons):
+        log(f"Processing season {season} (postseason={postseason}) for box scores...")
+        season_count = 0
+        for stat in client.list_stats_for_seasons([season], postseason=postseason):
+            _upsert_player_stat(session, stat)
+            season_count += 1
+            if season_count % 500 == 0:
+                log(f"Season {season}: processed {season_count} box score rows so far...")
+        log(f"Season {season}: ingested {season_count} player box score rows.")
+        count += season_count
     return count
 
 
@@ -275,9 +293,16 @@ def ingest_player_advanced(
     postseason: bool | None,
 ) -> int:
     count = 0
-    for stat in client.list_advanced_stats_for_seasons(seasons, postseason=postseason):
-        _upsert_player_advanced(session, stat)
-        count += 1
+    for season in list(seasons):
+        log(f"Processing season {season} (postseason={postseason}) for advanced stats...")
+        season_count = 0
+        for stat in client.list_advanced_stats_for_seasons([season], postseason=postseason):
+            _upsert_player_advanced(session, stat)
+            season_count += 1
+            if season_count % 500 == 0:
+                log(f"Season {season}: processed {season_count} advanced stat rows so far...")
+        log(f"Season {season}: ingested {season_count} advanced stat rows.")
+        count += season_count
     return count
 
 
@@ -303,9 +328,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     settings = load_settings()
-    seasons = settings.seasons
+    seasons = list(settings.seasons)
 
     # If --start/--end are provided, override the seasons list
+    start_bound: date | None = None
+    end_bound: date | None = None
     if args.start or args.end:
         if not (args.start and args.end):
             parser.error("--start and --end must be provided together")
@@ -330,8 +357,21 @@ def main(argv: Sequence[str] | None = None) -> None:
         start_season = season_for_date(start_date)
         end_season = season_for_date(end_date)
         seasons = list(range(start_season, end_season + 1))
+        start_bound = start_date
+        end_bound = end_date
 
     postseason_flag = True if args.postseason else None
+
+    if start_bound and end_bound:
+        log(
+            f"Starting BallDontLie ingest from {start_bound} to {end_bound} "
+            f"(seasons={seasons}, postseason={postseason_flag})."
+        )
+    else:
+        log(
+            f"Starting BallDontLie ingest for seasons={seasons} "
+            f"postseason={postseason_flag}."
+        )
 
     engine = create_db_engine(settings.database_url)
     Base.metadata.create_all(engine)
@@ -343,8 +383,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         games = ingest_games(client, session, seasons, postseason_flag)
         stats = ingest_player_stats(client, session, seasons, postseason_flag)
         advanced = ingest_player_advanced(client, session, seasons, postseason_flag)
-        print(
-            f"Ingested teams={teams} games={games} box_rows={stats} advanced_rows={advanced}"
+        log(
+            f"Finished BallDontLie ingest: teams={teams}, games={games}, "
+            f"box_rows={stats}, advanced_rows={advanced}."
         )
 
 

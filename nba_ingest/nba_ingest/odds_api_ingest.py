@@ -18,6 +18,10 @@ from .normalization import canonicalize_player_name, canonicalize_team_name
 from .odds_api_client import TheOddsApiClient
 
 
+def log(message: str) -> None:
+    print(f"[ODDS_API] {message}", flush=True)
+
+
 @dataclass(slots=True)
 class OddsSettings:
     api_key: str
@@ -144,6 +148,10 @@ def ingest_date(
 ) -> int:
     snapshot_iso = _snapshot_iso(target_date, settings.snapshot_time)
     events = client.list_historical_events_by_date(snapshot_iso)
+    log(f"{client.sport_key}: {target_date}: fetched {len(events)} events from provider.")
+    if not events:
+        log(f"{client.sport_key}: {target_date}: no events available, skipping.")
+        return 0
     rows = 0
     for event in events:
         home_team = _match_team(session, event.get("home_team"))
@@ -163,6 +171,9 @@ def ingest_date(
         bookmakers = client.historical_event_odds(
             event_id, snapshot_iso, settings.markets, settings.region
         )
+        if not bookmakers:
+            log(f"{client.sport_key}: {target_date}: no bookmakers returned, skipping event {event_id}.")
+            continue
         for bookmaker in bookmakers:
             book_key = bookmaker.get("key") or bookmaker.get("title")
             for market in bookmaker.get("markets", []):
@@ -249,12 +260,25 @@ def main(argv: Sequence[str] | None = None) -> None:
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
     client = TheOddsApiClient(settings.api_key, settings.base_url)
+    log(
+        f"Starting The Odds API ingest from {start_date} to {end_date}, "
+        f"sports={[client.sport_key]} markets={settings.markets}."
+    )
 
     with get_session(session_factory) as session:
         total_rows = 0
         for target_date in _daterange(start_date, end_date):
+            log(f"{client.sport_key}: processing date {target_date}...")
+            before_rows = total_rows
             total_rows += ingest_date(session, client, target_date, settings)
-        print(f"Inserted/updated {total_rows} odds rows from The Odds API")
+            delta = total_rows - before_rows
+            if delta == 0:
+                log(f"{client.sport_key}: {target_date}: no odds rows upserted.")
+            else:
+                log(
+                    f"{client.sport_key}: {target_date}: upserted {delta} odds rows into game_odds."
+                )
+        log(f"Finished The Odds API ingest. Inserted/updated {total_rows} rows.")
 
 
 if __name__ == "__main__":
