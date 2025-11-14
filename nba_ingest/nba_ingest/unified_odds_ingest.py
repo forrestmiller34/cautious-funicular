@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import os
 import time
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import requests
 from sqlalchemy import create_engine
@@ -32,6 +32,40 @@ DEFAULT_ODDS_API_START = date(2023, 5, 3)
 DEFAULT_ODDS_API_END = date(2025, 11, 11)
 DEFAULT_BETSAPI_START = date(2021, 10, 19)
 DEFAULT_BETSAPI_END = date(2025, 11, 11)
+
+BETSAPI_MARKET_ALIASES: dict[str, list[str]] = {
+    "moneyline": ["moneyline", "ml", "18_2", "h2h"],
+    "spread": ["spread", "handicap", "18_3"],
+    "total": ["total", "totals", "18_4"],
+}
+
+PROVIDER_DEFAULTS: dict[str, tuple[date, date]] = {
+    "betsapi": (DEFAULT_BETSAPI_START, DEFAULT_BETSAPI_END),
+    "sgo": (DEFAULT_SGO_START, DEFAULT_SGO_END),
+    "odds_api": (DEFAULT_ODDS_API_START, DEFAULT_ODDS_API_END),
+}
+
+
+@dataclass(slots=True)
+class IngestionStats:
+    provider: str
+    start_date: date
+    end_date: date
+    days_processed: int = 0
+    events_seen: int = 0
+    odds_rows: int = 0
+
+    def record_day(self, *, events: int, odds_rows: int) -> None:
+        self.days_processed += 1
+        self.events_seen += events
+        self.odds_rows += odds_rows
+
+
+def summarize_stats(stats: IngestionStats) -> str:
+    return (
+        f"[{stats.provider}] {stats.start_date}→{stats.end_date} "
+        f"days={stats.days_processed} events={stats.events_seen} odds={stats.odds_rows}"
+    )
 
 
 def _require_env(var_name: str) -> str:
@@ -199,57 +233,70 @@ def ingest_sgo_player_props(
     start_date: date,
     end_date: date,
     markets: tuple[str, ...],
-) -> None:
+    dry_run: bool = False,
+) -> IngestionStats:
     provider = "sportsgameodds"
+    stats = IngestionStats(provider=provider, start_date=start_date, end_date=end_date)
     if start_date > end_date:
-        return
-    with session_factory() as session:
-        current = get_ingestion_start_date(session, provider, start_date)
-        session.commit()
+        return stats
+    if dry_run:
+        current = start_date
+    else:
+        with session_factory() as session:
+            current = get_ingestion_start_date(session, provider, start_date)
+            session.commit()
     while current <= end_date:
         events = client.fetch_events_for_date(current)
         print(f"[SGO] {current}: discovered {len(events)} events")
-        with session_factory() as session:
-            rows_written = 0
-            for event_payload in events:
-                league_name = (event_payload.get("league") or {}).get("name")
-                if league_name and "nba" not in league_name.lower():
-                    continue
-                start_time = parse_datetime(
-                    event_payload.get("startTime")
-                    or event_payload.get("startsAt")
-                    or event_payload.get("commenceTime")
-                )
-                home_name = (
-                    (event_payload.get("homeTeam") or {}).get("name")
-                    or event_payload.get("home")
-                )
-                away_name = (
-                    (event_payload.get("awayTeam") or {}).get("name")
-                    or event_payload.get("away")
-                )
-                if not (home_name and away_name and start_time):
-                    continue
-                event = get_or_create_event(
-                    session,
-                    league_id=league_id,
-                    start_time_utc=start_time,
-                    home_team_name=home_name,
-                    away_team_name=away_name,
-                    provider_name=provider,
-                    provider_event_id=str(event_payload.get("id")),
-                )
-                rows_written += _persist_sgo_markets(
-                    session=session,
-                    event_id=event.id,
-                    league_id=league_id,
-                    markets=markets,
-                    payload=event_payload,
-                )
-            record_ingestion_state(session, provider, current)
-            session.commit()
-        print(f"[SGO] {current}: wrote {rows_written} markets")
+        if dry_run:
+            rows_written = sum(
+                _count_sgo_candidate_rows(event_payload, markets) for event_payload in events
+            )
+        else:
+            with session_factory() as session:
+                rows_written = 0
+                for event_payload in events:
+                    league_name = (event_payload.get("league") or {}).get("name")
+                    if league_name and "nba" not in league_name.lower():
+                        continue
+                    start_time = parse_datetime(
+                        event_payload.get("startTime")
+                        or event_payload.get("startsAt")
+                        or event_payload.get("commenceTime")
+                    )
+                    home_name = (
+                        (event_payload.get("homeTeam") or {}).get("name")
+                        or event_payload.get("home")
+                    )
+                    away_name = (
+                        (event_payload.get("awayTeam") or {}).get("name")
+                        or event_payload.get("away")
+                    )
+                    if not (home_name and away_name and start_time):
+                        continue
+                    event = get_or_create_event(
+                        session,
+                        league_id=league_id,
+                        start_time_utc=start_time,
+                        home_team_name=home_name,
+                        away_team_name=away_name,
+                        provider_name=provider,
+                        provider_event_id=str(event_payload.get("id")),
+                    )
+                    rows_written += _persist_sgo_markets(
+                        session=session,
+                        event_id=event.id,
+                        league_id=league_id,
+                        markets=markets,
+                        payload=event_payload,
+                    )
+                record_ingestion_state(session, provider, current)
+                session.commit()
+        stats.record_day(events=len(events), odds_rows=rows_written)
+        verb = "would write" if dry_run else "wrote"
+        print(f"[SGO] {current}: {verb} {rows_written} markets")
         current += timedelta(days=1)
+    return stats
 
 
 def _persist_sgo_markets(
@@ -333,6 +380,32 @@ def _persist_sgo_markets(
     return total_rows
 
 
+def _count_sgo_candidate_rows(payload: dict, markets: Sequence[str]) -> int:
+    market_aliases = {
+        "player points": "player_points",
+        "player point": "player_points",
+        "player assists": "player_assists",
+        "player rebounds": "player_rebounds",
+        "player threes": "player_threes",
+        "player 3s": "player_threes",
+        "player threes made": "player_threes",
+    }
+    total_rows = 0
+    for book in payload.get("bookmakers", []) or payload.get("books", []) or []:
+        for market in book.get("markets", []):
+            raw_category = (market.get("category") or market.get("marketCategory") or "").lower()
+            market_type = market_aliases.get(raw_category)
+            if not market_type or market_type not in markets:
+                continue
+            for outcome in market.get("outcomes", []):
+                participant = outcome.get("participant") or {}
+                player_name = participant.get("name") or market.get("playerName")
+                if not player_name:
+                    continue
+                total_rows += 1
+    return total_rows
+
+
 def ingest_odds_api_player_props(
     *,
     session_factory: sessionmaker,
@@ -341,46 +414,68 @@ def ingest_odds_api_player_props(
     start_date: date,
     end_date: date,
     markets: tuple[str, ...],
-) -> None:
+    dry_run: bool = False,
+) -> IngestionStats:
     provider = "the_odds_api"
+    stats = IngestionStats(provider=provider, start_date=start_date, end_date=end_date)
     if start_date > end_date:
-        return
-    with session_factory() as session:
-        current = get_ingestion_start_date(session, provider, start_date)
-        session.commit()
+        return stats
+    if dry_run:
+        current = start_date
+    else:
+        with session_factory() as session:
+            current = get_ingestion_start_date(session, provider, start_date)
+            session.commit()
     while current <= end_date:
         events = client.list_events_for_date(current)
         print(f"[OddsAPI] {current}: {len(events)} events")
-        with session_factory() as session:
-            total_rows = 0
-            for event_payload in events:
-                home = event_payload.get("home_team") or event_payload.get("homeTeam")
-                away = event_payload.get("away_team") or event_payload.get("awayTeam")
-                commence = event_payload.get("commence_time") or event_payload.get("commenceTime")
-                if not (home and away and commence):
-                    continue
-                start_time = parse_datetime(commence)
-                event = get_or_create_event(
-                    session,
-                    league_id=league_id,
-                    start_time_utc=start_time,
-                    home_team_name=home,
-                    away_team_name=away,
-                    provider_name=provider,
-                    provider_event_id=str(event_payload.get("id")),
+        if dry_run:
+            total_rows = sum(
+                _count_odds_api_candidate_rows(
+                    client.fetch_event_player_props(str(event_payload.get("id")), markets),
+                    markets,
                 )
-                odds_payload = client.fetch_event_player_props(str(event_payload.get("id")), markets)
-                total_rows += _persist_odds_api_markets(
-                    session=session,
-                    event_id=event.id,
-                    league_id=league_id,
-                    markets=markets,
-                    payload=odds_payload,
-                )
-            record_ingestion_state(session, provider, current)
-            session.commit()
-        print(f"[OddsAPI] {current}: wrote {total_rows} rows")
+                for event_payload in events
+                if event_payload.get("home_team")
+                and event_payload.get("away_team")
+                and (event_payload.get("commence_time") or event_payload.get("commenceTime"))
+            )
+        else:
+            with session_factory() as session:
+                total_rows = 0
+                for event_payload in events:
+                    home = event_payload.get("home_team") or event_payload.get("homeTeam")
+                    away = event_payload.get("away_team") or event_payload.get("awayTeam")
+                    commence = event_payload.get("commence_time") or event_payload.get("commenceTime")
+                    if not (home and away and commence):
+                        continue
+                    start_time = parse_datetime(commence)
+                    event = get_or_create_event(
+                        session,
+                        league_id=league_id,
+                        start_time_utc=start_time,
+                        home_team_name=home,
+                        away_team_name=away,
+                        provider_name=provider,
+                        provider_event_id=str(event_payload.get("id")),
+                    )
+                    odds_payload = client.fetch_event_player_props(
+                        str(event_payload.get("id")), markets
+                    )
+                    total_rows += _persist_odds_api_markets(
+                        session=session,
+                        event_id=event.id,
+                        league_id=league_id,
+                        markets=markets,
+                        payload=odds_payload,
+                    )
+                record_ingestion_state(session, provider, current)
+                session.commit()
+        stats.record_day(events=len(events), odds_rows=total_rows)
+        verb = "would write" if dry_run else "wrote"
+        print(f"[OddsAPI] {current}: {verb} {total_rows} rows")
         current += timedelta(days=1)
+    return stats
 
 
 def _persist_odds_api_markets(
@@ -441,6 +536,19 @@ def _persist_odds_api_markets(
     return total_rows
 
 
+def _count_odds_api_candidate_rows(payload: dict, markets: Sequence[str]) -> int:
+    total_rows = 0
+    for bookmaker in payload.get("bookmakers", []):
+        for market in bookmaker.get("markets", []):
+            key = market.get("key")
+            if key not in markets:
+                continue
+            for outcome in market.get("outcomes", []):
+                if outcome.get("description") or outcome.get("name"):
+                    total_rows += 1
+    return total_rows
+
+
 def ingest_betsapi_team_odds(
     *,
     session_factory: sessionmaker,
@@ -448,17 +556,22 @@ def ingest_betsapi_team_odds(
     client: BetsApiClient,
     start_date: date,
     end_date: date,
-) -> None:
+    dry_run: bool = False,
+) -> IngestionStats:
     provider = "betsapi"
+    stats = IngestionStats(provider=provider, start_date=start_date, end_date=end_date)
     if start_date > end_date:
-        return
-    with session_factory() as session:
-        current = get_ingestion_start_date(session, provider, start_date)
-        session.commit()
+        return stats
+    if dry_run:
+        current = start_date
+    else:
+        with session_factory() as session:
+            current = get_ingestion_start_date(session, provider, start_date)
+            session.commit()
     while current <= end_date:
         events = client.list_events_for_date(current)
         print(f"[BetsAPI] {current}: {len(events)} events")
-        with session_factory() as session:
+        if dry_run:
             total_rows = 0
             for event in events:
                 home = event.get("home") or event.get("homeTeam") or event.get("home_name")
@@ -466,27 +579,45 @@ def ingest_betsapi_team_odds(
                 start_time = event.get("time") or event.get("start_time")
                 if not (home and away and start_time):
                     continue
-                event_obj = get_or_create_event(
-                    session,
-                    league_id=league_id,
-                    start_time_utc=parse_datetime(start_time),
-                    home_team_name=home,
-                    away_team_name=away,
-                    provider_name=provider,
-                    provider_event_id=str(event.get("id") or event.get("event_id")),
+                odds_payload = client.fetch_event_odds(
+                    str(event.get("id") or event.get("event_id"))
                 )
-                odds_payload = client.fetch_event_odds(str(event.get("id") or event.get("event_id")))
-                total_rows += _persist_betsapi_markets(
-                    session,
-                    event_obj,
-                    odds_payload,
-                    home,
-                    away,
-                )
-            record_ingestion_state(session, provider, current)
-            session.commit()
-        print(f"[BetsAPI] {current}: wrote {total_rows} rows")
+                total_rows += _count_betsapi_candidate_rows(odds_payload)
+        else:
+            with session_factory() as session:
+                total_rows = 0
+                for event in events:
+                    home = event.get("home") or event.get("homeTeam") or event.get("home_name")
+                    away = event.get("away") or event.get("awayTeam") or event.get("away_name")
+                    start_time = event.get("time") or event.get("start_time")
+                    if not (home and away and start_time):
+                        continue
+                    event_obj = get_or_create_event(
+                        session,
+                        league_id=league_id,
+                        start_time_utc=parse_datetime(start_time),
+                        home_team_name=home,
+                        away_team_name=away,
+                        provider_name=provider,
+                        provider_event_id=str(event.get("id") or event.get("event_id")),
+                    )
+                    odds_payload = client.fetch_event_odds(
+                        str(event.get("id") or event.get("event_id"))
+                    )
+                    total_rows += _persist_betsapi_markets(
+                        session,
+                        event_obj,
+                        odds_payload,
+                        home,
+                        away,
+                    )
+                record_ingestion_state(session, provider, current)
+                session.commit()
+        stats.record_day(events=len(events), odds_rows=total_rows)
+        verb = "would write" if dry_run else "wrote"
+        print(f"[BetsAPI] {current}: {verb} {total_rows} rows")
         current += timedelta(days=1)
+    return stats
 
 
 def _resolve_team_side(outcome: dict, home_team: str, away_team: str) -> tuple[str, str]:
@@ -501,11 +632,6 @@ def _resolve_team_side(outcome: dict, home_team: str, away_team: str) -> tuple[s
 def _persist_betsapi_markets(
     session: Session, event: object, payload: dict, home_name: str, away_name: str
 ) -> int:
-    market_map = {
-        "moneyline": ["moneyline", "ml", "18_2", "h2h"],
-        "spread": ["spread", "handicap", "18_3"],
-        "total": ["total", "totals", "18_4"],
-    }
     total_rows = 0
     bookmakers = payload.get("bookmakers") or payload.get("results") or []
     for bookmaker in bookmakers:
@@ -514,7 +640,7 @@ def _persist_betsapi_markets(
         for market in bookmaker.get("markets", []):
             raw_key = (market.get("key") or market.get("market_name") or "").lower()
             resolved = None
-            for key, aliases in market_map.items():
+            for key, aliases in BETSAPI_MARKET_ALIASES.items():
                 if raw_key in aliases or any(alias in raw_key for alias in aliases):
                     resolved = key
                     break
@@ -567,10 +693,65 @@ def _persist_betsapi_markets(
     return total_rows
 
 
+def _count_betsapi_candidate_rows(payload: dict) -> int:
+    bookmakers = payload.get("bookmakers") or payload.get("results") or []
+    total_rows = 0
+    for bookmaker in bookmakers:
+        for market in bookmaker.get("markets", []):
+            raw_key = (market.get("key") or market.get("market_name") or "").lower()
+            for aliases in BETSAPI_MARKET_ALIASES.values():
+                if raw_key in aliases or any(alias in raw_key for alias in aliases):
+                    total_rows += len(market.get("outcomes", []))
+                    break
+    return total_rows
+
+
+def _resolve_range(
+    *,
+    default_start: date,
+    default_end: date,
+    start_override: date | None,
+    end_override: date | None,
+) -> tuple[date, date]:
+    start_candidate = start_override or default_start
+    if end_override is not None:
+        end_candidate = end_override
+    elif start_override is not None:
+        end_candidate = start_override
+    else:
+        end_candidate = default_end
+    start = max(default_start, start_candidate)
+    end = min(default_end, end_candidate)
+    if start > end:
+        raise ValueError("Start date must be on or before end date")
+    return start, end
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified odds ingestion pipeline")
-    parser.add_argument("--start", type=lambda s: date.fromisoformat(s), default=DEFAULT_BETSAPI_START)
-    parser.add_argument("--end", type=lambda s: date.fromisoformat(s), default=DEFAULT_BETSAPI_END)
+    parser.add_argument(
+        "--provider",
+        choices=("all", "betsapi", "sgo", "odds_api"),
+        default="all",
+        help="Which provider pipeline to run (default: all)",
+    )
+    parser.add_argument(
+        "--start-date",
+        dest="start_date",
+        type=lambda s: date.fromisoformat(s),
+        help="Earliest date to ingest (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--end-date",
+        dest="end_date",
+        type=lambda s: date.fromisoformat(s),
+        help="Last date to ingest (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch and parse data without touching the database",
+    )
     return parser
 
 
@@ -578,43 +759,98 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     settings = Settings.from_env()
 
-    engine = create_engine(settings.database_url, future=True)
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    if args.dry_run:
+        SessionLocal = sessionmaker()
+        league_id = 0
+    else:
+        engine = create_engine(settings.database_url, future=True)
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False, future=True
+        )
+        with SessionLocal() as session:
+            league = get_or_create_league(session, "NBA")
+            session.commit()
+            league_id = league.id
 
-    with SessionLocal() as session:
-        league = get_or_create_league(session, "NBA")
-        session.commit()
-        league_id = league.id
+    provider_sequence = ["betsapi", "sgo", "odds_api"]
+    if args.provider != "all":
+        provider_sequence = [args.provider]
 
-    bets_client = BetsApiClient(settings.betsapi_api_key, settings.betsapi_base_url)
-    ingest_betsapi_team_odds(
-        session_factory=SessionLocal,
-        league_id=league_id,
-        client=bets_client,
-        start_date=max(DEFAULT_BETSAPI_START, args.start),
-        end_date=min(DEFAULT_BETSAPI_END, args.end),
-    )
+    stats: list[IngestionStats] = []
 
-    sgo_client = SportsGameOddsClient(settings.sportsgameodds_api_key, settings.sportsgameodds_base_url)
-    ingest_sgo_player_props(
-        session_factory=SessionLocal,
-        league_id=league_id,
-        client=sgo_client,
-        start_date=max(DEFAULT_SGO_START, args.start),
-        end_date=min(DEFAULT_SGO_END, args.end),
-        markets=settings.markets,
-    )
+    if "betsapi" in provider_sequence:
+        try:
+            start, end = _resolve_range(
+                default_start=PROVIDER_DEFAULTS["betsapi"][0],
+                default_end=PROVIDER_DEFAULTS["betsapi"][1],
+                start_override=args.start_date,
+                end_override=args.end_date,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        bets_client = BetsApiClient(settings.betsapi_api_key, settings.betsapi_base_url)
+        stats.append(
+            ingest_betsapi_team_odds(
+                session_factory=SessionLocal,
+                league_id=league_id,
+                client=bets_client,
+                start_date=start,
+                end_date=end,
+                dry_run=args.dry_run,
+            )
+        )
 
-    odds_client = TheOddsApiClient(settings.odds_api_key, settings.odds_api_base_url)
-    ingest_odds_api_player_props(
-        session_factory=SessionLocal,
-        league_id=league_id,
-        client=odds_client,
-        start_date=max(DEFAULT_ODDS_API_START, args.start),
-        end_date=min(DEFAULT_ODDS_API_END, args.end),
-        markets=settings.markets,
-    )
+    if "sgo" in provider_sequence:
+        try:
+            start, end = _resolve_range(
+                default_start=PROVIDER_DEFAULTS["sgo"][0],
+                default_end=PROVIDER_DEFAULTS["sgo"][1],
+                start_override=args.start_date,
+                end_override=args.end_date,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        sgo_client = SportsGameOddsClient(
+            settings.sportsgameodds_api_key, settings.sportsgameodds_base_url
+        )
+        stats.append(
+            ingest_sgo_player_props(
+                session_factory=SessionLocal,
+                league_id=league_id,
+                client=sgo_client,
+                start_date=start,
+                end_date=end,
+                markets=settings.markets,
+                dry_run=args.dry_run,
+            )
+        )
+
+    if "odds_api" in provider_sequence:
+        try:
+            start, end = _resolve_range(
+                default_start=PROVIDER_DEFAULTS["odds_api"][0],
+                default_end=PROVIDER_DEFAULTS["odds_api"][1],
+                start_override=args.start_date,
+                end_override=args.end_date,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        odds_client = TheOddsApiClient(settings.odds_api_key, settings.odds_api_base_url)
+        stats.append(
+            ingest_odds_api_player_props(
+                session_factory=SessionLocal,
+                league_id=league_id,
+                client=odds_client,
+                start_date=start,
+                end_date=end,
+                markets=settings.markets,
+                dry_run=args.dry_run,
+            )
+        )
+
+    for stat in stats:
+        print("Summary:", summarize_stats(stat))
 
 
 if __name__ == "__main__":  # pragma: no cover
