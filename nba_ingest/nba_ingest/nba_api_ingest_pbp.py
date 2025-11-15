@@ -85,8 +85,7 @@ def _ensure_player(session: Session, nba_id: int | None, name: str | None) -> in
 
 
 def _map_scoreboard_games(session: Session, target_date: date) -> int:
-    sb = ScoreboardV2(
-        game_date=target_date.strftime("%Y-%m-%d"),
+    sb = ScoreboardV2(game_date=target_date.strftime("%Y-%m-%d"),
     )
     games_df = sb.game_header.get_data_frame()
     if games_df.empty:
