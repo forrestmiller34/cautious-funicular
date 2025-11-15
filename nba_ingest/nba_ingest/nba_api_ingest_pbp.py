@@ -10,6 +10,7 @@ from typing import Iterable, Sequence
 import pandas as pd
 from dotenv import load_dotenv
 from nba_api.stats.endpoints import PlayByPlayV2, ScoreboardV2
+from nba_api.stats.static import teams as static_teams
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -45,20 +46,31 @@ def _parse_date(value: str | datetime) -> date:
         return value.date()
     return pd.to_datetime(value).date()
 
+TEAMS_BY_ID: dict[str, dict] = {}
+
+def _get_teams_by_id() -> dict[str, dict]:
+    global TEAMS_BY_ID
+    if not TEAMS_BY_ID:
+        TEAMS_BY_ID = {str(team["id"]): team for team in static_teams.get_teams()}
+    return TEAMS_BY_ID
 
 def _resolve_team_id(session: Session, nba_team_id: int | None, abbreviation: str | None) -> int | None:
     if nba_team_id:
+        nba_team_id_str = str(int(nba_team_id))
         team_id = session.execute(
-            select(Team.id).where(Team.nba_team_id == str(nba_team_id))
+            select(Team.id).where(Team.nba_team_id == nba_team_id_str)
         ).scalar_one_or_none()
         if team_id:
             return team_id
+        teams_by_id = _get_teams_by_id()
+        team_info = teams_by_id.get(nba_team_id_str)
+        if team_info:
+            abbreviation = team_info.get("abbreviation") or abbreviation
     if abbreviation:
         return session.execute(
-            select(Team.id).where(Team.abbreviation == abbreviation.upper())
+            select(Team.id).where(Team.abbrev == abbreviation.upper())
         ).scalar_one_or_none()
     return None
-
 
 def _ensure_player(session: Session, nba_id: int | None, name: str | None) -> int | None:
     if not name:
@@ -98,6 +110,10 @@ def _map_scoreboard_games(session: Session, target_date: date) -> int:
         away_abbrev = row.get("VISITOR_TEAM_ABBREVIATION")
         home_team_id = _resolve_team_id(session, row.get("HOME_TEAM_ID"), home_abbrev)
         away_team_id = _resolve_team_id(session, row.get("VISITOR_TEAM_ID"), away_abbrev)
+        log(
+        f"Scoreboard row {game_date} {away_abbrev}@{home_abbrev}: "
+        f"nba_game_id={nba_game_id}, home_team_id={home_team_id}, away_team_id={away_team_id}"
+        )
         if home_team_id and row.get("HOME_TEAM_ID"):
             session.execute(
                 update(Team)
@@ -206,6 +222,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     provider_name = "nba_api_pbp"
     database_url = _load_database_url()
+    log(f"NBA PBP ingest using DATABASE_URL={database_url}")
     engine = create_db_engine(database_url)
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
