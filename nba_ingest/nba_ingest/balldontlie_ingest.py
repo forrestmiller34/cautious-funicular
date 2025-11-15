@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from datetime import date, datetime
 from typing import Iterable, Sequence
 
@@ -101,6 +102,20 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(cleaned)
     except ValueError:
         return None
+
+
+def _clean_advanced_value(value: object | None, *, max_abs: float) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(numeric) or math.isinf(numeric):
+        return None
+    if abs(numeric) > max_abs:
+        return None
+    return numeric
 
 
 def _upsert_team(session: Session, payload: dict) -> None:
@@ -374,6 +389,23 @@ def _upsert_player_advanced(session: Session, stat: dict) -> None:
         "player_id": player_id,
         "team_id": team_id,
         "minutes": stat.get("min"),
+        "off_rating": _clean_advanced_value(stat.get("off_rating"), max_abs=1000),
+        "def_rating": _clean_advanced_value(stat.get("def_rating"), max_abs=1000),
+        "usage_pct": _clean_advanced_value(stat.get("usg_pct"), max_abs=100),
+        "ts_pct": _clean_advanced_value(stat.get("ts_pct"), max_abs=100),
+        "offensive_reb_pct": _clean_advanced_value(stat.get("oreb_pct"), max_abs=100),
+        "defensive_reb_pct": _clean_advanced_value(stat.get("dreb_pct"), max_abs=100),
+        "assist_pct": _clean_advanced_value(stat.get("ast_pct"), max_abs=100),
+        "steal_pct": _clean_advanced_value(stat.get("stl_pct"), max_abs=100),
+        "block_pct": _clean_advanced_value(stat.get("blk_pct"), max_abs=100),
+        "pie": stat.get("pie"),
+        "pace": _clean_advanced_value(stat.get("pace"), max_abs=1000),
+        "assist_ratio": _clean_advanced_value(stat.get("ast_ratio"), max_abs=1000),
+        "assist_to_turnover": _clean_advanced_value(stat.get("ast_tov"), max_abs=1000),
+        "effective_fg_pct": _clean_advanced_value(stat.get("efg_pct"), max_abs=100),
+        "net_rating": _clean_advanced_value(stat.get("net_rating"), max_abs=1000),
+        "rebound_pct": _clean_advanced_value(stat.get("reb_pct"), max_abs=100),
+        "turnover_ratio": _clean_advanced_value(stat.get("tov_ratio"), max_abs=1000),
         "off_rating": stat.get("off_rating"),
         "def_rating": stat.get("def_rating"),
         "usage_pct": stat.get("usg_pct"),
