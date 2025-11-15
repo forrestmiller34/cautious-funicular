@@ -22,4 +22,6 @@ __all__ = [
     "sports_game_odds_client",
     "odds_api_client",
     "props_hybrid_ingest",
+    "injuries_client",
+    "injuries_ingest",
 ]
