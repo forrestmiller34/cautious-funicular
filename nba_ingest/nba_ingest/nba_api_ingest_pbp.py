@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import create_db_engine, create_session_factory, get_session
 from .models import Base, Game, PlayByPlayEvent, Player, Team
+from .odds_helpers import get_ingestion_start_date, record_ingestion_state
 from .normalization import canonicalize_player_name
 
 
@@ -201,38 +202,49 @@ def main(argv: Sequence[str] | None = None) -> None:
         f"Starting NBA play-by-play ingest from {start_date} to {end_date} "
         f"with delay={args.delay}s."
     )
+    provider_name = "nba_api_pbp"
     database_url = _load_database_url()
     engine = create_db_engine(database_url)
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
 
     with get_session(session_factory) as session:
+        effective_start = get_ingestion_start_date(session, provider_name, start_date)
+        if effective_start > end_date:
+            log(
+                f"All dates up to {end_date} already ingested for provider {provider_name}; nothing to do."
+            )
+            return
+
         num_dates = 0
-        for target_date in _daterange(start_date, end_date):
+        total_events = 0
+        for target_date in _daterange(effective_start, end_date):
             log(f"Processing date {target_date}: syncing scoreboard...")
             mapped = _map_scoreboard_games(session, target_date)
             log(f"Processing date {target_date}: mapped {mapped} games from scoreboard.")
+            games_for_date = list(
+                session.execute(
+                    select(Game).where(
+                        Game.nba_game_id.is_not(None),
+                        Game.game_date == target_date,
+                    )
+                ).scalars()
+            )
+            if not games_for_date:
+                log(f"Processing date {target_date}: no games found.")
+            for idx, game in enumerate(games_for_date, start=1):
+                total_events += _ingest_play_by_play(session, game, args.delay)
+                if idx % 5 == 0 or idx == len(games_for_date):
+                    log(
+                        f"Processing date {target_date}: processed {idx}/{len(games_for_date)} games; "
+                        f"total_events={total_events}."
+                    )
+            record_ingestion_state(session, provider_name, target_date)
+            session.commit()
             num_dates += 1
-        games = list(
-            session.execute(
-                select(Game).where(
-                    Game.nba_game_id.is_not(None),
-                    Game.game_date >= start_date,
-                    Game.game_date <= end_date,
-                )
-            ).scalars()
-        )
-        total_events = 0
-        for idx, game in enumerate(games, start=1):
-            total_events += _ingest_play_by_play(session, game, args.delay)
-            if idx % 10 == 0:
-                log(
-                    f"Processed {idx}/{len(games)} games so far; "
-                    f"events_ingested={total_events}."
-                )
         log(
-            f"Finished NBA play-by-play ingest: dates={num_dates}, "
-            f"games={len(games)}, pbp_events={total_events}."
+            f"Finished NBA play-by-play ingest: dates_processed={num_dates}, "
+            f"pbp_events={total_events}."
         )
 
 
