@@ -127,11 +127,11 @@ class BallDontLieClient:
         params: Dict[str, object] = {
             "season": season,
             "season_type": season_type,
-            "category": category,
             "type": stat_type,
             "per_page": 100,
         }
-        yield from self._paginate("/v1/season_averages", params)
+        path = f"/v1/season_averages/{category}"
+        yield from self._paginate(path, params)
 
     def list_odds_by_date(self, date: str) -> List[Dict[str, object]]:
         """Retrieve odds for the specified date (YYYY-MM-DD)."""

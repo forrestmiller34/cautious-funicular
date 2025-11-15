@@ -459,6 +459,25 @@ class Injury(Base):
     )
 
 
+class IngestionStatus(Base):
+    __tablename__ = "ingestion_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    season: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source",
+            "season",
+            "data_type",
+            name="uq_ingestion_status_source_season_type",
+        ),
+    )
+
+
 __all__ = [
     "Base",
     "League",
@@ -473,5 +492,6 @@ __all__ = [
     "OddsBook",
     "OddsMarket",
     "IngestionState",
+    "IngestionStatus",
     "Injury",
 ]

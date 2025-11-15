@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .balldontlie_client import BallDontLieClient
 from .config import load_settings
 from .db import create_db_engine, create_session_factory, get_session
+from .ingestion_status import is_ingestion_complete, mark_ingestion_complete
 from .models import (
     Base,
     Game,
@@ -684,14 +685,42 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     with get_session(session_factory) as session:
         teams = ingest_teams(client, session)
-        games = ingest_games(client, session, seasons, postseason_flag)
-        stats = ingest_player_stats(client, session, seasons, postseason_flag)
-        advanced = ingest_player_advanced(client, session, seasons, postseason_flag)
-        season_avgs = ingest_season_averages(client, session, seasons)
+        total_games = 0
+        total_stats = 0
+        total_advanced = 0
+        total_season_avgs = 0
+        for season in seasons:
+            if is_ingestion_complete(session, "balldontlie", season, "stats"):
+                log(
+                    f"Season {season} already ingested for balldontlie stats, skipping."
+                )
+                continue
+            log(f"Starting balldontlie ingestion for season {season}...")
+            try:
+                games = ingest_games(client, session, [season], postseason_flag)
+                stats = ingest_player_stats(client, session, [season], postseason_flag)
+                advanced = ingest_player_advanced(
+                    client, session, [season], postseason_flag
+                )
+                season_avgs = ingest_season_averages(client, session, [season])
+                session.commit()
+                mark_ingestion_complete(session, "balldontlie", season, "stats")
+            except Exception as exc:
+                session.rollback()
+                log(f"Error ingesting season {season}: {exc}")
+                raise
+            total_games += games
+            total_stats += stats
+            total_advanced += advanced
+            total_season_avgs += season_avgs
+            log(
+                f"Completed balldontlie season {season}: games={games}, box_rows={stats}, "
+                f"advanced_rows={advanced}, season_average_rows={season_avgs}."
+            )
         log(
-            f"Finished BallDontLie ingest: teams={teams}, games={games}, "
-            f"box_rows={stats}, advanced_rows={advanced}, "
-            f"season_average_rows={season_avgs}."
+            f"Finished BallDontLie ingest: teams={teams}, games={total_games}, "
+            f"box_rows={total_stats}, advanced_rows={total_advanced}, "
+            f"season_average_rows={total_season_avgs}."
         )
 
 
