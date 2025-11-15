@@ -14,6 +14,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base
+from .notifications import notify
 from .odds_helpers import (
     get_ingestion_start_date,
     get_or_create_bookmaker,
@@ -796,71 +797,84 @@ def main() -> None:
 
     stats: list[IngestionStats] = []
 
-    for provider in provider_sequence:
-        try:
-            start_range, end_range = _resolve_range(
-                default_start=PROVIDER_DEFAULTS[provider][0],
-                default_end=PROVIDER_DEFAULTS[provider][1],
-                start_override=args.start_date,
-                end_override=args.end_date,
-            )
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
+    try:
+        for provider in provider_sequence:
+            try:
+                start_range, end_range = _resolve_range(
+                    default_start=PROVIDER_DEFAULTS[provider][0],
+                    default_end=PROVIDER_DEFAULTS[provider][1],
+                    start_override=args.start_date,
+                    end_override=args.end_date,
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
 
-        if provider == "betsapi":
-            client = BetsApiClient(settings.betsapi_api_key, settings.betsapi_base_url)
-            stats.append(
-                ingest_betsapi_team_odds(
-                    session_factory=SessionLocal,
-                    league_id=league_id,
-                    client=client,
-                    start_date=start_range,
-                    end_date=end_range,
-                    dry_run=args.dry_run,
+            if provider == "betsapi":
+                client = BetsApiClient(settings.betsapi_api_key, settings.betsapi_base_url)
+                stats.append(
+                    ingest_betsapi_team_odds(
+                        session_factory=SessionLocal,
+                        league_id=league_id,
+                        client=client,
+                        start_date=start_range,
+                        end_date=end_range,
+                        dry_run=args.dry_run,
+                    )
                 )
-            )
-        elif provider == "sgo":
-            client = SportsGameOddsClient(
-                settings.sportsgameodds_api_key, settings.sportsgameodds_base_url
-            )
-            stats.append(
-                ingest_sgo_player_props(
-                    session_factory=SessionLocal,
-                    league_id=league_id,
-                    client=client,
-                    start_date=start_range,
-                    end_date=end_range,
-                    markets=settings.markets,
-                    dry_run=args.dry_run,
+            elif provider == "sgo":
+                client = SportsGameOddsClient(
+                    settings.sportsgameodds_api_key, settings.sportsgameodds_base_url
                 )
-            )
-        elif provider == "odds_api":
-            client = TheOddsApiClient(settings.odds_api_key, settings.odds_api_base_url)
-            stats.append(
-                ingest_odds_api_player_props(
-                    session_factory=SessionLocal,
-                    league_id=league_id,
-                    client=client,
-                    start_date=start_range,
-                    end_date=end_range,
-                    markets=settings.markets,
-                    dry_run=args.dry_run,
+                stats.append(
+                    ingest_sgo_player_props(
+                        session_factory=SessionLocal,
+                        league_id=league_id,
+                        client=client,
+                        start_date=start_range,
+                        end_date=end_range,
+                        markets=settings.markets,
+                        dry_run=args.dry_run,
+                    )
                 )
-            )
+            elif provider == "odds_api":
+                client = TheOddsApiClient(settings.odds_api_key, settings.odds_api_base_url)
+                stats.append(
+                    ingest_odds_api_player_props(
+                        session_factory=SessionLocal,
+                        league_id=league_id,
+                        client=client,
+                        start_date=start_range,
+                        end_date=end_range,
+                        markets=settings.markets,
+                        dry_run=args.dry_run,
+                    )
+                )
 
-    summary_dict = {
-        stat.provider: {
-            "start": stat.start_date.isoformat(),
-            "end": stat.end_date.isoformat(),
-            "days": stat.days_processed,
-            "events": stat.events_seen,
-            "odds_rows": stat.odds_rows,
+        summary_dict = {
+            stat.provider: {
+                "start": stat.start_date.isoformat(),
+                "end": stat.end_date.isoformat(),
+                "days": stat.days_processed,
+                "events": stat.events_seen,
+                "odds_rows": stat.odds_rows,
+            }
+            for stat in stats
         }
+        for stat in stats:
+            log(f"Summary: {summarize_stats(stat)}")
+        log(f"Finished unified odds ingest. Summary: {summary_dict}.")
+    except Exception as exc:
+        log(f"Unified odds ingest failed: {exc}")
+        notify(f"❌ Odds ingest FAILED: {exc}")
+        raise
+    summary_text = ", ".join(
+        f"{stat.provider}:days={stat.days_processed},events={stat.events_seen},odds={stat.odds_rows}"
         for stat in stats
-    }
-    for stat in stats:
-        log(f"Summary: {summarize_stats(stat)}")
-    log(f"Finished unified odds ingest. Summary: {summary_dict}.")
+    )
+    notify(
+        "✅ Odds ingest finished successfully for all configured providers." +
+        (f" Summary: {summary_text}." if summary_text else "")
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

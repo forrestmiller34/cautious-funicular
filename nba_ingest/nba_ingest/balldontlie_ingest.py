@@ -24,6 +24,7 @@ from .models import (
     Team,
 )
 from .normalization import canonicalize_player_name, canonicalize_team_name, season_label
+from .notifications import notify
 
 SEASON_AVERAGE_CATEGORIES: dict[str, tuple[str, ...]] = {
     "general": ("base", "advanced", "usage", "scoring", "defense", "misc"),
@@ -682,6 +683,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     Base.metadata.create_all(engine)
     session_factory = create_session_factory(engine)
     client = BallDontLieClient(settings.api_key)
+    min_season = min(seasons) if seasons else None
+    max_season = max(seasons) if seasons else None
 
     with get_session(session_factory) as session:
         teams = ingest_teams(client, session)
@@ -708,6 +711,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             except Exception as exc:
                 session.rollback()
                 log(f"Error ingesting season {season}: {exc}")
+                notify(f"❌ balldontlie ingest FAILED for season {season}: {exc}")
                 raise
             total_games += games
             total_stats += stats
@@ -722,6 +726,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"box_rows={total_stats}, advanced_rows={total_advanced}, "
             f"season_average_rows={total_season_avgs}."
         )
+        if min_season is not None and max_season is not None:
+            notify(
+                "✅ balldontlie ingest finished successfully for seasons "
+                f"{min_season}–{max_season}."
+            )
 
 
 if __name__ == "__main__":
