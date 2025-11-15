@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -131,6 +132,25 @@ class Game(Base):
     odds_api_event_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     sgo_event_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     provider_event_ids: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    raw_json: Mapped[dict | None] = mapped_column(JSONB)
+    status: Mapped[str | None] = mapped_column(String(64))
+    period: Mapped[int | None] = mapped_column(Integer)
+    time: Mapped[str | None] = mapped_column(String(64))
+    postseason: Mapped[bool | None] = mapped_column(Boolean)
+    home_q1: Mapped[int | None] = mapped_column(Integer)
+    home_q2: Mapped[int | None] = mapped_column(Integer)
+    home_q3: Mapped[int | None] = mapped_column(Integer)
+    home_q4: Mapped[int | None] = mapped_column(Integer)
+    home_ot: Mapped[int | None] = mapped_column(Integer)
+    away_q1: Mapped[int | None] = mapped_column(Integer)
+    away_q2: Mapped[int | None] = mapped_column(Integer)
+    away_q3: Mapped[int | None] = mapped_column(Integer)
+    away_q4: Mapped[int | None] = mapped_column(Integer)
+    away_ot: Mapped[int | None] = mapped_column(Integer)
+    home_timeouts_remaining: Mapped[int | None] = mapped_column(Integer)
+    away_timeouts_remaining: Mapped[int | None] = mapped_column(Integer)
+    home_in_bonus: Mapped[bool | None] = mapped_column(Boolean)
+    away_in_bonus: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
@@ -215,6 +235,14 @@ class PlayerGameAdvanced(Base):
     assist_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
     steal_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
     block_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    pie: Mapped[float | None] = mapped_column(Numeric(6, 3))
+    pace: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    assist_ratio: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    assist_to_turnover: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    effective_fg_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    net_rating: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    rebound_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    turnover_ratio: Mapped[float | None] = mapped_column(Numeric(6, 2))
     raw_json: Mapped[dict | None] = mapped_column(JSONB)
 
     game: Mapped[Game] = relationship("Game", back_populates="advanced_stats")
@@ -248,6 +276,39 @@ class PlayByPlayEvent(Base):
 
     __table_args__ = (
         UniqueConstraint("game_id", "event_num", name="uq_pbp_game_event"),
+    )
+
+
+class SeasonAverage(Base):
+    __tablename__ = "season_averages"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    season: Mapped[int] = mapped_column(Integer, nullable=False)
+    season_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    stat_type: Mapped[str] = mapped_column("type", String(32), nullable=False)
+    stats: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw_player: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    player: Mapped[Player] = relationship("Player")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id",
+            "season",
+            "season_type",
+            "category",
+            "type",
+            name="uq_season_avg_player_season_category",
+        ),
+        Index("ix_season_averages_player_season", "player_id", "season"),
     )
 
 
@@ -358,6 +419,46 @@ class IngestionState(Base):
     last_successful_date: Mapped[Date | None] = mapped_column(Date)
 
 
+class Injury(Base):
+    __tablename__ = "injuries"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    league_id: Mapped[int | None] = mapped_column(ForeignKey("leagues.id"))
+    injury_date: Mapped[Date] = mapped_column(Date, nullable=False)
+    team_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    player_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str | None] = mapped_column(String(128))
+    reason: Mapped[str | None] = mapped_column(String(255))
+    report_time_raw: Mapped[str | None] = mapped_column(String(32))
+    raw_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    league: Mapped[League | None] = relationship("League")
+    player: Mapped[Player | None] = relationship("Player")
+    team: Mapped[Team | None] = relationship("Team")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "injury_date",
+            "team_name",
+            "player_name",
+            "status",
+            "report_time_raw",
+            name="uq_injuries_snapshot",
+        ),
+        Index("ix_injuries_injury_date", "injury_date"),
+        Index("ix_injuries_player_date", "player_id", "injury_date"),
+        Index("ix_injuries_team_date", "team_id", "injury_date"),
+    )
+
+
 __all__ = [
     "Base",
     "League",
@@ -366,9 +467,11 @@ __all__ = [
     "Game",
     "PlayerGameStat",
     "PlayerGameAdvanced",
+    "SeasonAverage",
     "PlayByPlayEvent",
     "GameOdds",
     "OddsBook",
     "OddsMarket",
     "IngestionState",
+    "Injury",
 ]
