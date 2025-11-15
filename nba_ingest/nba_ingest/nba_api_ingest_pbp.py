@@ -8,8 +8,9 @@ from datetime import date, datetime, timedelta
 from typing import Iterable, Sequence
 
 import pandas as pd
+import requests
 from dotenv import load_dotenv
-from nba_api.stats.endpoints import PlayByPlayV2, ScoreboardV2
+from nba_api.stats.endpoints import ScoreboardV2
 from nba_api.stats.static import teams as static_teams
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -150,20 +151,58 @@ def _ingest_play_by_play(session: Session, game: Game, delay: float) -> int:
     if not game.nba_game_id:
         log(f"{game.game_date}: skipping game {game.id} (missing NBA game id).")
         return 0
-     # Ensure nba game id is a 10-digit string starting with "00"
     raw_game_id = game.nba_game_id
     game_id = str(raw_game_id).zfill(10)
-    log(f"[NBA_PBP] Fetching play-by-play for game_id={game_id} (raw={raw_game_id})")
+    log(
+        f"Fetching play-by-play via HTTP for game_id={game_id} (raw={raw_game_id})"
+    )
+    params = {"GameID": game_id, "StartPeriod": 0, "EndPeriod": 14}
+    headers = {
+        "Connection": "keep-alive",
+        "Accept": "application/json, text/plain, */*",
+        "x-nba-stats-token": "true",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "x-nba-stats-origin": "stats",
+        "Referer": "https://www.nba.com/",
+        "Origin": "https://www.nba.com",
+    }
     try:
-        pbp = PlayByPlayV2(game_id=game_id)
-    except Exception as e:
-        log(f"[NBA_PBP] Failed to fetch PBP for game_id={game_id}: {e!r}")
+        resp = requests.get(
+            "https://stats.nba.com/stats/playbyplayv2",
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        log(
+            f"{game.game_date}: failed to fetch play-by-play for game {game_id}: {exc!r}"
+        )
         return 0
-    frames = pbp.get_data_frames()
-    if not frames:
-        log(f"{game.game_date}: skipping game {game.nba_game_id} (no play-by-play data).")
+    result = None
+    result_sets = data.get("resultSets")
+    if isinstance(result_sets, list) and result_sets:
+        result = result_sets[0]
+    elif data.get("resultSet"):
+        result = data.get("resultSet")
+    if not result:
+        log(
+            f"{game.game_date}: response for game {game_id} missing result set; keys={list(data.keys())}"
+        )
         return 0
-    df = frames[0]
+    headers_row = result.get("headers")
+    rows = result.get("rowSet")
+    if not headers_row or not rows:
+        log(
+            f"{game.game_date}: play-by-play response empty for game {game_id} (headers/rows)"
+        )
+        return 0
+    df = pd.DataFrame(rows, columns=headers_row)
     inserted = 0
     home_team_name = getattr(game.home_team, "name", f"home_id={game.home_team_id}")
     away_team_name = getattr(game.away_team, "name", f"away_id={game.away_team_id}")
