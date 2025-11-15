@@ -150,7 +150,15 @@ def _ingest_play_by_play(session: Session, game: Game, delay: float) -> int:
     if not game.nba_game_id:
         log(f"{game.game_date}: skipping game {game.id} (missing NBA game id).")
         return 0
-    pbp = PlayByPlayV2(game_id=game.nba_game_id)
+     # Ensure nba game id is a 10-digit string starting with "00"
+    raw_game_id = game.nba_game_id
+    game_id = str(raw_game_id).zfill(10)
+    log(f"[NBA_PBP] Fetching play-by-play for game_id={game_id} (raw={raw_game_id})")
+    try:
+        pbp = PlayByPlayV2(game_id=game_id)
+    except Exception as e:
+        log(f"[NBA_PBP] Failed to fetch PBP for game_id={game_id}: {e!r}")
+        return 0
     frames = pbp.get_data_frames()
     if not frames:
         log(f"{game.game_date}: skipping game {game.nba_game_id} (no play-by-play data).")
