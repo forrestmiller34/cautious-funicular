@@ -384,11 +384,30 @@ def _upsert_player_advanced(session: Session, stat: dict) -> None:
     team_id = _team_db_id(session, team.get("id"))
     if not team_id:
         return
+    advanced_metrics = {
+        "off_rating": _clean_advanced_value(stat.get("off_rating"), max_abs=1000),
+        "def_rating": _clean_advanced_value(stat.get("def_rating"), max_abs=1000),
+        "usage_pct": _clean_advanced_value(stat.get("usg_pct"), max_abs=100),
+        "ts_pct": _clean_advanced_value(stat.get("ts_pct"), max_abs=100),
+        "offensive_reb_pct": _clean_advanced_value(stat.get("oreb_pct"), max_abs=100),
+        "defensive_reb_pct": _clean_advanced_value(stat.get("dreb_pct"), max_abs=100),
+        "assist_pct": _clean_advanced_value(stat.get("ast_pct"), max_abs=100),
+        "steal_pct": _clean_advanced_value(stat.get("stl_pct"), max_abs=100),
+        "block_pct": _clean_advanced_value(stat.get("blk_pct"), max_abs=100),
+        "pace": _clean_advanced_value(stat.get("pace"), max_abs=1000),
+        "assist_ratio": _clean_advanced_value(stat.get("ast_ratio"), max_abs=1000),
+        "assist_to_turnover": _clean_advanced_value(stat.get("ast_tov"), max_abs=1000),
+        "effective_fg_pct": _clean_advanced_value(stat.get("efg_pct"), max_abs=100),
+        "net_rating": _clean_advanced_value(stat.get("net_rating"), max_abs=1000),
+        "rebound_pct": _clean_advanced_value(stat.get("reb_pct"), max_abs=100),
+        "turnover_ratio": _clean_advanced_value(stat.get("tov_ratio"), max_abs=1000),
+    }
     payload = {
         "game_id": game_id,
         "player_id": player_id,
         "team_id": team_id,
         "minutes": stat.get("min"),
+        "pie": stat.get("pie"),
         "off_rating": _clean_advanced_value(stat.get("off_rating"), max_abs=1000),
         "def_rating": _clean_advanced_value(stat.get("def_rating"), max_abs=1000),
         "usage_pct": _clean_advanced_value(stat.get("usg_pct"), max_abs=100),
@@ -424,6 +443,7 @@ def _upsert_player_advanced(session: Session, stat: dict) -> None:
         "rebound_pct": stat.get("reb_pct"),
         "turnover_ratio": stat.get("tov_ratio"),
         "raw_json": stat,
+        **advanced_metrics,
     }
     stmt = (
         insert(PlayerGameAdvanced)
