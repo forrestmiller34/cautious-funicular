@@ -137,6 +137,9 @@ class Game(Base):
     period: Mapped[int | None] = mapped_column(Integer)
     time: Mapped[str | None] = mapped_column(String(64))
     postseason: Mapped[bool | None] = mapped_column(Boolean)
+    sgo_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    oddsapi_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    betsapi_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     home_q1: Mapped[int | None] = mapped_column(Integer)
     home_q2: Mapped[int | None] = mapped_column(Integer)
     home_q3: Mapped[int | None] = mapped_column(Integer)
@@ -176,6 +179,12 @@ class Game(Base):
         "PlayByPlayEvent", back_populates="game"
     )
     odds: Mapped[list[GameOdds]] = relationship("GameOdds", back_populates="game")
+    ingest_jobs: Mapped[list["OddsIngestJob"]] = relationship(
+        "OddsIngestJob", back_populates="game"
+    )
+    unified_odds: Mapped[list["UnifiedGameOdds"]] = relationship(
+        "UnifiedGameOdds", back_populates="game"
+    )
 
     __table_args__ = (
         UniqueConstraint("bdl_game_id", name="uq_games_bdl_game_id"),
@@ -358,6 +367,41 @@ class GameOdds(Base):
     )
 
 
+class UnifiedGameOdds(Base):
+    """Idempotent odds table keyed by provider, market, and bookmaker."""
+
+    __tablename__ = "unified_game_odds"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    market_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    bookmaker: Mapped[str] = mapped_column(String(128), nullable=False)
+    outcome_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    line: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    price: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    extra: Mapped[dict | None] = mapped_column(JSONB)
+
+    game: Mapped[Game] = relationship("Game", back_populates="unified_odds")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "game_id",
+            "market_type",
+            "bookmaker",
+            "outcome_key",
+            name="uq_unified_odds_identity",
+        ),
+    )
+
+
 class OddsBook(Base):
     __tablename__ = "odds_books"
 
@@ -410,6 +454,47 @@ class OddsMarket(Base):
         ),
         UniqueConstraint("identity_key", name="uq_odds_markets_identity"),
     )
+
+
+class OddsIngestJob(Base):
+    """Tracks provider/game ingest jobs for concurrent workers."""
+
+    __tablename__ = "odds_ingest_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    game: Mapped[Game] = relationship("Game", back_populates="ingest_jobs")
+
+    __table_args__ = (
+        UniqueConstraint("game_id", "provider", name="uq_odds_ingest_job"),
+    )
+
+
+class OddsProviderUsage(Base):
+    """Snapshots of provider credit usage."""
+
+    __tablename__ = "odds_provider_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    snapshot_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    credits_remaining: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    credits_used: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    window_label: Mapped[str | None] = mapped_column(String(255))
+    meta: Mapped[str | None] = mapped_column(Text)
 
 
 class IngestionState(Base):
@@ -489,8 +574,11 @@ __all__ = [
     "SeasonAverage",
     "PlayByPlayEvent",
     "GameOdds",
+    "UnifiedGameOdds",
     "OddsBook",
     "OddsMarket",
+    "OddsIngestJob",
+    "OddsProviderUsage",
     "IngestionState",
     "IngestionStatus",
     "Injury",
