@@ -5,6 +5,7 @@ python-dotenv
 python-dateutil
 pandas
 nba_api
+basketball_reference_web_scraper
 scikit-learn
 joblib
 fastapi
