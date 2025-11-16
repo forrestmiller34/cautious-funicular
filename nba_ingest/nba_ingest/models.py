@@ -195,6 +195,33 @@ class Game(Base):
     )
 
 
+class SdvGameMap(Base):
+    """Bridge SDV play-by-play game identifiers to internal ``games`` rows."""
+
+    __tablename__ = "sdv_game_map"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    sdv_game_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    season: Mapped[int | None] = mapped_column(Integer)
+    game_date: Mapped[Date] = mapped_column(Date, nullable=False)
+    sdv_home_team: Mapped[str | None] = mapped_column(String(64))
+    sdv_away_team: Mapped[str | None] = mapped_column(String(64))
+    internal_game_id: Mapped[int | None] = mapped_column(ForeignKey("games.id"))
+    matched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    game: Mapped[Game | None] = relationship("Game")
+
+    __table_args__ = (
+        UniqueConstraint("sdv_game_id", name="uq_sdv_game_map_sdv_game_id"),
+    )
+
+
 class PlayerGameStat(Base):
     __tablename__ = "player_game_stats"
 
