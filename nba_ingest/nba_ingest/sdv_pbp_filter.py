@@ -107,31 +107,110 @@ def filter_multiple_files(
     print(f"[SDV_FILTER] Total: {total_filtered:,} / {total_original:,} rows kept")
 
 
+def inspect_parquet_dates(input_path: str) -> None:
+    """Show the date range of a parquet file."""
+    print(f"[SDV_FILTER] Inspecting {input_path}...")
+    df = pd.read_parquet(input_path)
+
+    # Find the date column
+    date_col = None
+    for candidate in ["game_date", "date", "start_date"]:
+        if candidate in df.columns:
+            date_col = candidate
+            break
+
+    if not date_col:
+        print(f"  ERROR: Could not find date column. Available: {list(df.columns)[:20]}...")
+        return
+
+    # Convert to datetime if needed
+    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+        df[date_col] = pd.to_datetime(df[date_col])
+
+    total_rows = len(df)
+    min_date = df[date_col].min()
+    max_date = df[date_col].max()
+    unique_dates = df[date_col].dt.date.nunique()
+
+    print(f"  Total rows: {total_rows:,}")
+    print(f"  Date column: {date_col}")
+    print(f"  First game date: {min_date.date()}")
+    print(f"  Last game date: {max_date.date()}")
+    print(f"  Unique game dates: {unique_dates}")
+
+    # Show breakdown by month
+    df["_month"] = df[date_col].dt.to_period("M")
+    monthly = df.groupby("_month").size()
+    print(f"\n  Monthly breakdown:")
+    for month, count in monthly.items():
+        print(f"    {month}: {count:,} rows")
+    print()
+
+
+def inspect_multiple_files(input_dir: str, pattern: str = "*.parquet") -> None:
+    """Inspect all parquet files in a directory."""
+    input_path = Path(input_dir)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Directory does not exist: {input_dir}")
+
+    files = list(input_path.glob(pattern))
+    if not files:
+        print(f"[SDV_FILTER] No files matching '{pattern}' in {input_dir}")
+        return
+
+    print(f"[SDV_FILTER] Found {len(files)} file(s) to inspect\n")
+
+    for file_path in sorted(files):
+        inspect_parquet_dates(str(file_path))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Filter SDV PBP parquet files by date range"
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Inspect command
+    inspect_parser = subparsers.add_parser(
+        "inspect", help="Show date ranges in parquet file(s)"
+    )
+    inspect_parser.add_argument(
+        "input",
+        help="Input parquet file or directory to inspect",
+    )
+    inspect_parser.add_argument(
+        "--pattern",
+        type=str,
+        default="*.parquet",
+        help="File pattern for directory mode (default: *.parquet)",
+    )
+
+    # Filter command
+    filter_parser = subparsers.add_parser(
+        "filter", help="Filter parquet file(s) by date range"
+    )
+    filter_parser.add_argument(
         "input",
         help="Input parquet file or directory",
     )
-    parser.add_argument(
+    filter_parser.add_argument(
         "output",
         help="Output parquet file or directory",
     )
-    parser.add_argument(
+    filter_parser.add_argument(
         "--start-date",
         type=str,
-        default="2021-10-19",
-        help="Start date (inclusive) in YYYY-MM-DD format (default: 2021-10-19)",
+        required=True,
+        help="Start date (inclusive) in YYYY-MM-DD format",
     )
-    parser.add_argument(
+    filter_parser.add_argument(
         "--end-date",
         type=str,
-        default=None,
-        help="End date (inclusive) in YYYY-MM-DD format (default: no limit)",
+        required=True,
+        help="End date (inclusive) in YYYY-MM-DD format",
     )
-    parser.add_argument(
+    filter_parser.add_argument(
         "--pattern",
         type=str,
         default="*.parquet",
@@ -140,17 +219,27 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    start_date = date.fromisoformat(args.start_date)
-    end_date = date.fromisoformat(args.end_date) if args.end_date else None
+    if args.command == "inspect":
+        input_path = Path(args.input)
+        if input_path.is_file():
+            inspect_parquet_dates(args.input)
+        elif input_path.is_dir():
+            inspect_multiple_files(args.input, args.pattern)
+        else:
+            raise FileNotFoundError(f"Input path does not exist: {args.input}")
 
-    input_path = Path(args.input)
+    elif args.command == "filter":
+        start_date = date.fromisoformat(args.start_date)
+        end_date = date.fromisoformat(args.end_date)
 
-    if input_path.is_file():
-        filter_parquet_by_date(args.input, args.output, start_date, end_date)
-    elif input_path.is_dir():
-        filter_multiple_files(args.input, args.output, start_date, end_date, args.pattern)
-    else:
-        raise FileNotFoundError(f"Input path does not exist: {args.input}")
+        input_path = Path(args.input)
+
+        if input_path.is_file():
+            filter_parquet_by_date(args.input, args.output, start_date, end_date)
+        elif input_path.is_dir():
+            filter_multiple_files(args.input, args.output, start_date, end_date, args.pattern)
+        else:
+            raise FileNotFoundError(f"Input path does not exist: {args.input}")
 
 
 if __name__ == "__main__":
