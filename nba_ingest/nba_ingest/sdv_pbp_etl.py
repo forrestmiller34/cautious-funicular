@@ -112,10 +112,25 @@ def detect_columns(raw_table: Table) -> RawTableColumns:
             raise RuntimeError(f"Could not find required column for {key}")
         return found
 
-    internal_game_id = "game_id"
-    if internal_game_id.lower() not in available:
+    # Prefer internal_game_id, fall back to game_id if internal_game_id not present
+    if "internal_game_id" in available:
+        internal_game_id = "internal_game_id"
+    elif "game_id" in available:
+        # Check if game_id is the SDV identifier or the internal mapping
+        sdv_game_id_candidate = pick("sdv_game_id", required=True)
+        if sdv_game_id_candidate == "game_id":
+            # game_id is the SDV identifier, we need to add internal_game_id column
+            raise RuntimeError(
+                "Raw table has 'game_id' as SDV identifier but no 'internal_game_id' column. "
+                "Please add the 'internal_game_id' column to the raw table:\n"
+                "  ALTER TABLE <table_name> ADD COLUMN internal_game_id BIGINT;"
+            )
+        internal_game_id = "game_id"
+    else:
         raise RuntimeError(
-            "Raw table is missing the destination game_id column; run migrations first."
+            "Raw table is missing the destination game_id or internal_game_id column; "
+            "run migrations first or add the column manually:\n"
+            "  ALTER TABLE <table_name> ADD COLUMN internal_game_id BIGINT;"
         )
 
     sdv_game_id = pick("sdv_game_id", required=True)
