@@ -20,6 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Create the sdv_game_map bridge table
     op.create_table(
         "sdv_game_map",
         sa.Column(
@@ -39,10 +40,16 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column(
-            "matched", sa.Boolean(), nullable=False, server_default=sa.text("false")
+            "matched",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
         ),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.Column(
             "updated_at",
@@ -51,17 +58,37 @@ def upgrade() -> None:
             server_onupdate=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(["internal_game_id"], ["games.id"], ),
+        sa.ForeignKeyConstraint(["internal_game_id"], ["games.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("sdv_game_id", name="uq_sdv_game_map_sdv_game_id"),
     )
 
-    op.add_column(
-        "sdv_nba_pbp_2021_raw",
-        sa.Column("game_id", sa.BigInteger(), nullable=True),
-    )
+    # Conditionally add game_id to sdv_nba_pbp_2021_raw
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+
+    table_names = insp.get_table_names()
+    if "sdv_nba_pbp_2021_raw" in table_names:
+        cols = [c["name"] for c in insp.get_columns("sdv_nba_pbp_2021_raw")]
+        if "game_id" not in cols:
+            op.add_column(
+                "sdv_nba_pbp_2021_raw",
+                sa.Column("game_id", sa.BigInteger(), nullable=True),
+            )
+        # else: game_id already exists, don't try to add it again
+    # else: raw table doesn't exist yet; we'll add game_id some other way if needed
 
 
 def downgrade() -> None:
-    op.drop_column("sdv_nba_pbp_2021_raw", "game_id")
+    # Conditionally drop game_id from sdv_nba_pbp_2021_raw
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+
+    table_names = insp.get_table_names()
+    if "sdv_nba_pbp_2021_raw" in table_names:
+        cols = [c["name"] for c in insp.get_columns("sdv_nba_pbp_2021_raw")]
+        if "game_id" in cols:
+            op.drop_column("sdv_nba_pbp_2021_raw", "game_id")
+
+    # Drop the sdv_game_map table
     op.drop_table("sdv_game_map")
