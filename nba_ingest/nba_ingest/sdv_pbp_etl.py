@@ -520,8 +520,10 @@ def etl_play_by_play(
     return rows
 
 
-def diagnose_unmatched(session: Session) -> None:
+def diagnose_unmatched(session: Session, output_file: str | None = None) -> None:
     """Show diagnostic info for unmatched games in sdv_game_map."""
+    import csv
+
     unmatched = session.execute(
         select(SdvGameMap).where(SdvGameMap.matched.is_(False))
     ).scalars().all()
@@ -531,13 +533,38 @@ def diagnose_unmatched(session: Session) -> None:
         return
 
     log(f"Found {len(unmatched)} unmatched sdv_game_map entries:")
+
+    # Prepare data for CSV
+    rows = []
     for mapping in unmatched:
         home_id = _resolve_team_id(session, mapping.sdv_home_team)
         away_id = _resolve_team_id(session, mapping.sdv_away_team)
+
+        row = {
+            "sdv_game_id": mapping.sdv_game_id,
+            "season": mapping.season,
+            "game_date": mapping.game_date,
+            "sdv_home_team": mapping.sdv_home_team,
+            "sdv_away_team": mapping.sdv_away_team,
+            "home_team_id": home_id,
+            "away_team_id": away_id,
+            "matchup": f"{mapping.sdv_away_team}@{mapping.sdv_home_team}",
+        }
+        rows.append(row)
+
+        # Still print to console
         log(
             f"  {mapping.sdv_game_id}: {mapping.game_date} "
             f"{mapping.sdv_away_team}(id={away_id})@{mapping.sdv_home_team}(id={home_id})"
         )
+
+    # Write to CSV if output file specified
+    if output_file and rows:
+        with open(output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        log(f"Wrote {len(rows)} unmatched games to {output_file}")
 
 
 def main() -> None:
@@ -550,7 +577,10 @@ def main() -> None:
     subparsers.add_parser("inspect", help="List columns for the raw SDV table")
     subparsers.add_parser("populate-map", help="Populate sdv_game_map from the raw table")
     subparsers.add_parser("match-map", help="Match sdv_game_map rows to games")
-    subparsers.add_parser("diagnose", help="Show diagnostic info for unmatched games")
+
+    diagnose_parser = subparsers.add_parser("diagnose", help="Show diagnostic info for unmatched games")
+    diagnose_parser.add_argument("--output", help="Output CSV file path for unmatched games")
+
     subparsers.add_parser(
         "backfill-game-ids",
         help="Fill raw table game_id using sdv_game_map mappings",
@@ -576,7 +606,7 @@ def main() -> None:
         elif args.command == "match-map":
             match_game_map(session)
         elif args.command == "diagnose":
-            diagnose_unmatched(session)
+            diagnose_unmatched(session, args.output)
         elif args.command == "backfill-game-ids":
             backfill_raw_game_ids(session, raw_table, columns)
         elif args.command == "etl":
