@@ -212,7 +212,7 @@ def populate_game_map(
 def _resolve_team_id(session: Session, team_code: str | None) -> int | None:
     if not team_code:
         return None
-    team_code_str = str(team_code)
+    team_code_str = str(team_code).strip()
     team = session.execute(
         select(Team.id).where(func.upper(Team.abbrev) == func.upper(team_code_str))
     ).scalar_one_or_none()
@@ -224,19 +224,54 @@ def _resolve_team_id(session: Session, team_code: str | None) -> int | None:
 
 
 def match_game_map(session: Session) -> int:
+    from datetime import timedelta
+
     mappings = session.execute(
         select(SdvGameMap).where(SdvGameMap.matched.is_(False))
     ).scalars()
 
     updated = 0
     for mapping in mappings:
+        game_id = None
+
+        # Strategy 1: Try to match by SDV game ID directly (ESPN game ID)
+        # Check if it's stored in nba_game_id or provider_event_ids
+        sdv_id_str = str(mapping.sdv_game_id)
+        game_id = session.execute(
+            select(Game.id).where(Game.nba_game_id == sdv_id_str)
+        ).scalar_one_or_none()
+        if game_id:
+            log(f"Matched {mapping.sdv_game_id} via nba_game_id")
+            session.execute(
+                SdvGameMap.__table__.update()
+                .where(SdvGameMap.id == mapping.id)
+                .values(internal_game_id=game_id, matched=True)
+            )
+            updated += 1
+            continue
+
+        # Strategy 2: Match by date and teams
         home_id = _resolve_team_id(session, mapping.sdv_home_team)
         away_id = _resolve_team_id(session, mapping.sdv_away_team)
         if not (home_id and away_id and mapping.game_date):
+            # Provide more specific diagnostic info
+            missing_parts = []
+            if not mapping.game_date:
+                missing_parts.append("game_date")
+            if not mapping.sdv_home_team:
+                missing_parts.append("home_team_code")
+            elif not home_id:
+                missing_parts.append(f"home_team_id ('{mapping.sdv_home_team}' not found)")
+            if not mapping.sdv_away_team:
+                missing_parts.append("away_team_code")
+            elif not away_id:
+                missing_parts.append(f"away_team_id ('{mapping.sdv_away_team}' not found)")
             log(
-                f"Skipping match for {mapping.sdv_game_id}: missing team ids or game date"
+                f"Skipping match for {mapping.sdv_game_id}: missing {', '.join(missing_parts)}"
             )
             continue
+
+        # Try exact match first
         game_id = session.execute(
             select(Game.id)
             .where(
@@ -246,11 +281,96 @@ def match_game_map(session: Session) -> int:
             )
             .limit(2)
         ).scalar_one_or_none()
+
+        # If no match, try with swapped home/away (in case of data inconsistency)
         if not game_id:
-            log(
-                f"No unique game match for {mapping.sdv_game_id} on {mapping.game_date} "
-                f"({mapping.sdv_away_team}@{mapping.sdv_home_team})"
-            )
+            game_id = session.execute(
+                select(Game.id)
+                .where(
+                    Game.game_date == mapping.game_date,
+                    Game.home_team_id == away_id,
+                    Game.away_team_id == home_id,
+                )
+                .limit(2)
+            ).scalar_one_or_none()
+            if game_id:
+                log(
+                    f"Found match for {mapping.sdv_game_id} with swapped home/away teams"
+                )
+
+        # If still no match, try ±1 day (timezone issues)
+        if not game_id:
+            for day_offset in [-1, 1]:
+                adjusted_date = mapping.game_date + timedelta(days=day_offset)
+                game_id = session.execute(
+                    select(Game.id)
+                    .where(
+                        Game.game_date == adjusted_date,
+                        Game.home_team_id == home_id,
+                        Game.away_team_id == away_id,
+                    )
+                    .limit(2)
+                ).scalar_one_or_none()
+                if game_id:
+                    log(
+                        f"Found match for {mapping.sdv_game_id} on {adjusted_date} "
+                        f"(offset by {day_offset} day)"
+                    )
+                    break
+                # Also check swapped teams with date offset
+                game_id = session.execute(
+                    select(Game.id)
+                    .where(
+                        Game.game_date == adjusted_date,
+                        Game.home_team_id == away_id,
+                        Game.away_team_id == home_id,
+                    )
+                    .limit(2)
+                ).scalar_one_or_none()
+                if game_id:
+                    log(
+                        f"Found match for {mapping.sdv_game_id} on {adjusted_date} "
+                        f"with swapped teams (offset by {day_offset} day)"
+                    )
+                    break
+
+        if not game_id:
+            # Check if there are any games on that date for diagnostic purposes
+            games_on_date = session.execute(
+                select(Game.id, Game.home_team_id, Game.away_team_id)
+                .where(Game.game_date == mapping.game_date)
+            ).all()
+            if games_on_date:
+                # Check if these teams have any games at all
+                home_games = session.execute(
+                    select(Game.id, Game.game_date)
+                    .where(
+                        ((Game.home_team_id == home_id) | (Game.away_team_id == home_id))
+                    )
+                    .order_by(Game.game_date)
+                    .limit(5)
+                ).all()
+                away_games = session.execute(
+                    select(Game.id, Game.game_date)
+                    .where(
+                        ((Game.home_team_id == away_id) | (Game.away_team_id == away_id))
+                    )
+                    .order_by(Game.game_date)
+                    .limit(5)
+                ).all()
+                log(
+                    f"No unique game match for {mapping.sdv_game_id} on {mapping.game_date} "
+                    f"({mapping.sdv_away_team}@{mapping.sdv_home_team}). "
+                    f"Found {len(games_on_date)} games on that date but none match. "
+                    f"Home team ({mapping.sdv_home_team}) has {len(home_games)} games in DB. "
+                    f"Away team ({mapping.sdv_away_team}) has {len(away_games)} games in DB."
+                )
+            else:
+                log(
+                    f"No unique game match for {mapping.sdv_game_id} on {mapping.game_date} "
+                    f"({mapping.sdv_away_team}@{mapping.sdv_home_team}). "
+                    f"No games found on {mapping.game_date} at all."
+                )
             continue
         session.execute(
             SdvGameMap.__table__.update()
@@ -385,6 +505,26 @@ def etl_play_by_play(
     return rows
 
 
+def diagnose_unmatched(session: Session) -> None:
+    """Show diagnostic info for unmatched games in sdv_game_map."""
+    unmatched = session.execute(
+        select(SdvGameMap).where(SdvGameMap.matched.is_(False))
+    ).scalars().all()
+
+    if not unmatched:
+        log("All sdv_game_map entries are matched!")
+        return
+
+    log(f"Found {len(unmatched)} unmatched sdv_game_map entries:")
+    for mapping in unmatched:
+        home_id = _resolve_team_id(session, mapping.sdv_home_team)
+        away_id = _resolve_team_id(session, mapping.sdv_away_team)
+        log(
+            f"  {mapping.sdv_game_id}: {mapping.game_date} "
+            f"{mapping.sdv_away_team}(id={away_id})@{mapping.sdv_home_team}(id={home_id})"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SDV play-by-play ETL")
     parser.add_argument("--source-table", required=True, help="Raw SDV table name")
@@ -395,6 +535,7 @@ def main() -> None:
     subparsers.add_parser("inspect", help="List columns for the raw SDV table")
     subparsers.add_parser("populate-map", help="Populate sdv_game_map from the raw table")
     subparsers.add_parser("match-map", help="Match sdv_game_map rows to games")
+    subparsers.add_parser("diagnose", help="Show diagnostic info for unmatched games")
     subparsers.add_parser(
         "backfill-game-ids",
         help="Fill raw table game_id using sdv_game_map mappings",
@@ -419,6 +560,8 @@ def main() -> None:
             populate_game_map(session, raw_table, columns, args.season)
         elif args.command == "match-map":
             match_game_map(session)
+        elif args.command == "diagnose":
+            diagnose_unmatched(session)
         elif args.command == "backfill-game-ids":
             backfill_raw_game_ids(session, raw_table, columns)
         elif args.command == "etl":
