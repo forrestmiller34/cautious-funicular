@@ -697,8 +697,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                 log(
                     f"Season {season} already ingested for balldontlie stats, skipping."
                 )
+                notify(f"⏭️ Season {season} already complete, skipping")
                 continue
             log(f"Starting balldontlie ingestion for season {season}...")
+            notify(f"🏀 Starting ingestion for season {season}...")
             try:
                 games = ingest_games(client, session, [season], postseason_flag)
                 stats = ingest_player_stats(client, session, [season], postseason_flag)
@@ -720,6 +722,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             log(
                 f"Completed balldontlie season {season}: games={games}, box_rows={stats}, "
                 f"advanced_rows={advanced}, season_average_rows={season_avgs}."
+            )
+            notify(
+                f"✅ Season {season} complete: {games} games, {stats} stats, "
+                f"{advanced} advanced stats ingested"
             )
         log(
             f"Finished BallDontLie ingest: teams={teams}, games={total_games}, "
