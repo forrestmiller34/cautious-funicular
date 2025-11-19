@@ -122,6 +122,12 @@ def _export_balldontlie(
     resolved_api_key = _balldontlie_api_key(api_key, required=True)
     client = BallDontLieClient(resolved_api_key)
 
+    start: date, end: date, *, output: Path, api_key: str | None = None
+) -> Path:
+    client = BallDontLieClient(_balldontlie_api_key(api_key, required=True))
+def _export_balldontlie(start: date, end: date, *, output: Path) -> Path:
+    api_key = _require_env("BALLDONTLIE_API_KEY")
+    client = BallDontLieClient(api_key)
     games = client.list_games_by_date_range(start, end)
     rows: list[dict[str, object]] = []
     for game in games:
@@ -150,6 +156,9 @@ def _export_balldontlie(
                         "postseason": game.get("postseason"),
                     }
                 ),
+                    {"period": game.get("period"), "postseason": game.get("postseason")}
+                ),
+                "extra": _json({"period": game.get("period"), "postseason": game.get("postseason")}),
             }
         )
     return _write_csv(rows, output)
@@ -371,6 +380,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                     api_key=args.balldontlie_api_key,
                 )
             )
+                    args.start, end_date, output=path, api_key=args.balldontlie_api_key
+                )
+            )
+            outputs.append(_export_balldontlie(args.start, end_date, output=path))
         elif provider == "odds_api":
             outputs.append(_export_odds_api(args.start, args.days, output=path))
         elif provider == "sgo":
