@@ -197,6 +197,38 @@ All providers write into this shared schema so rows from different APIs referenc
 
 Once your DB schema is applied and env vars are set, you can run the ingestion pipelines.
 
+### Removing previously ingested games for one team
+
+If you need to wipe Ball Don't Lie data for a single team before re-ingesting (e.g., Denver after fixing the `bdl_team_id`), run the helper SQL script against Postgres:
+
+```
+psql $DATABASE_URL -f sql/delete_team_games.sql
+```
+
+The script deletes play-by-play, box scores, odds, and the `games` rows for the chosen team and date window (defaults cover Denver from 2021-10-01 through 2026-06-30). Edit the `\set` variables at the top of `sql/delete_team_games.sql` to target a different team or date range.
+
+### Export a week of provider games to CSV (ID comparison)
+
+Generate CSV snapshots of a week's games from each provider to compare provider IDs/abbreviations against your server:
+
+```
+# Dump one CSV per provider into ./reports for the selected week
+python -m nba_ingest.export_games_csv --start 2024-10-01 --days 7
+
+# Single provider with custom path
+python -m nba_ingest.export_games_csv --provider balldontlie --start 2024-10-01 --days 7 --output /tmp/bdl_week.csv
+```
+
+Providers covered:
+
+* `balldontlie` – uses `BALDONTLIE_API_KEY`
+* `odds_api` – uses `ODDS_API_KEY` (and optional `ODDS_API_BASE_URL`)
+* `sgo` – uses `SPORTSGAMEODDS_API_KEY` (and optional `SGO_BASE_URL`)
+* `betsapi` – uses `BETSAPI_API_KEY` (and optional `BETSAPI_BASE_URL`)
+* `unified_odds` – reads existing `games` from `DATABASE_URL` with provider IDs
+
+Each CSV includes provider event IDs, home/away names/abbreviations, and provider team IDs (when available) so you can line them up against your own mappings.
+
 ### 1. Ball Don't Lie schedules + stats
 
 Populates leagues, teams, games, and player-level stats:

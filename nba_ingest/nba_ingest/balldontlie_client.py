@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence
 
 import requests
@@ -91,6 +92,18 @@ class BallDontLieClient:
         if postseason is not None:
             params["postseason"] = str(postseason).lower()
         yield from self._paginate("/v1/games", params)
+
+    def list_games_by_date_range(
+        self, start_date: date, end_date: date
+    ) -> List[Dict[str, object]]:
+        """Retrieve games between ``start_date`` and ``end_date`` inclusive."""
+
+        params: Dict[str, object] = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "per_page": 100,
+        }
+        return list(self._paginate("/v1/games", params))
 
     def list_advanced_stats_for_seasons(
         self, seasons: Iterable[int], postseason: Optional[bool] = None
