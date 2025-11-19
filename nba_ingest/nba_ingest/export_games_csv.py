@@ -88,7 +88,7 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> Path:
 
 
 def _export_balldontlie(start: date, end: date, *, output: Path) -> Path:
-    api_key = _require_env("BALDONTLIE_API_KEY")
+    api_key = _require_env("BALLDONTLIE_API_KEY")
     client = BallDontLieClient(api_key)
     games = client.list_games_by_date_range(start, end)
     rows: list[dict[str, object]] = []
