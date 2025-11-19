@@ -504,12 +504,23 @@ def _upsert_season_average(
 
 def ingest_teams(client: BallDontLieClient, session: Session) -> list[dict]:
     log("Fetching team directory from BallDontLie...")
-    teams = client.list_teams()
+    all_teams = client.list_teams()
+
+    # Keep only "real" NBA teams with a proper conference (East/West).
+    teams = [
+        t
+        for t in all_teams
+        if (t.get("conference") or "").strip() in {"East", "West"}
+    ]
+
     for team in teams:
         _upsert_team(session, team)
-    log(f"Ingested/updated {len(teams)} teams.")
-    return teams
 
+    log(
+        f"Ingested/updated {len(teams)} teams "
+        f"(filtered from {len(all_teams)} raw teams)."
+    )
+    return teams
 
 def _allowed_team_ids(requested: str | None, teams: list[dict]) -> set[int] | None:
     if not requested:
