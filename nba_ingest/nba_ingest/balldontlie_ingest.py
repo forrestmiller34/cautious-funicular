@@ -502,13 +502,59 @@ def _upsert_season_average(
     session.execute(stmt)
 
 
-def ingest_teams(client: BallDontLieClient, session: Session) -> int:
+def ingest_teams(client: BallDontLieClient, session: Session) -> list[dict]:
     log("Fetching team directory from BallDontLie...")
     teams = client.list_teams()
     for team in teams:
         _upsert_team(session, team)
     log(f"Ingested/updated {len(teams)} teams.")
-    return len(teams)
+    return teams
+
+
+def _allowed_team_ids(requested: str | None, teams: list[dict]) -> set[int] | None:
+    if not requested:
+        return None
+
+    allowed: set[int] = set()
+    requested_abbrevs = {
+        item.strip().upper()
+        for token in requested.split(",")
+        for item in [token]
+        if item.strip()
+    }
+    requested_ids = {int(value) for value in requested_abbrevs if value.isdigit()}
+    requested_canonical = {
+        canonicalize_team_name(value) for value in requested_abbrevs if not value.isdigit()
+    }
+
+    for team in teams:
+        team_id = _to_int(team.get("id"))
+        if team_id is None:
+            continue
+        abbreviation = (team.get("abbreviation") or "").upper()
+        canonical = canonicalize_team_name(team.get("full_name"))
+
+        if team_id in requested_ids:
+            allowed.add(team_id)
+            continue
+        if abbreviation and abbreviation in requested_abbrevs:
+            allowed.add(team_id)
+            continue
+        if canonical in requested_canonical:
+            allowed.add(team_id)
+
+    if not allowed:
+        log(
+            "No teams matched requested filters %s; proceeding without team filter."
+            % sorted(requested_abbrevs)
+        )
+        return None
+
+    log(
+        "Limiting ingestion to teams: %s"
+        % ", ".join(sorted(str(team_id) for team_id in allowed))
+    )
+    return allowed
 
 
 def ingest_games(
@@ -516,12 +562,21 @@ def ingest_games(
     session: Session,
     seasons: Iterable[int],
     postseason: bool | None,
+    *,
+    allowed_team_ids: set[int] | None = None,
 ) -> int:
     count = 0
     for season in list(seasons):
         log(f"Processing season {season} (postseason={postseason}) for games...")
         season_count = 0
         for game in client.list_games_for_seasons([season], postseason=postseason):
+            home_team = (game.get("home_team") or {}).get("id")
+            away_team = (game.get("visitor_team") or {}).get("id")
+            if allowed_team_ids and not {
+                _to_int(home_team),
+                _to_int(away_team),
+            } & allowed_team_ids:
+                continue
             if _ensure_game(session, game):
                 season_count += 1
         log(f"Season {season}: ingested {season_count} games.")
@@ -534,12 +589,24 @@ def ingest_player_stats(
     session: Session,
     seasons: Iterable[int],
     postseason: bool | None,
+    *,
+    allowed_team_ids: set[int] | None = None,
 ) -> int:
     count = 0
     for season in list(seasons):
         log(f"Processing season {season} (postseason={postseason}) for box scores...")
         season_count = 0
         for stat in client.list_stats_for_seasons([season], postseason=postseason):
+            team_id = _to_int((stat.get("team") or {}).get("id"))
+            game = stat.get("game") or {}
+            home_team_id = _to_int((game.get("home_team") or {}).get("id"))
+            away_team_id = _to_int((game.get("visitor_team") or {}).get("id"))
+            if allowed_team_ids and not {
+                team_id,
+                home_team_id,
+                away_team_id,
+            } & allowed_team_ids:
+                continue
             _upsert_player_stat(session, stat)
             season_count += 1
             if season_count % 500 == 0:
@@ -554,12 +621,24 @@ def ingest_player_advanced(
     session: Session,
     seasons: Iterable[int],
     postseason: bool | None,
+    *,
+    allowed_team_ids: set[int] | None = None,
 ) -> int:
     count = 0
     for season in list(seasons):
         log(f"Processing season {season} (postseason={postseason}) for advanced stats...")
         season_count = 0
         for stat in client.list_advanced_stats_for_seasons([season], postseason=postseason):
+            team_id = _to_int((stat.get("team") or {}).get("id"))
+            game = stat.get("game") or {}
+            home_team_id = _to_int((game.get("home_team") or {}).get("id"))
+            away_team_id = _to_int((game.get("visitor_team") or {}).get("id"))
+            if allowed_team_ids and not {
+                team_id,
+                home_team_id,
+                away_team_id,
+            } & allowed_team_ids:
+                continue
             _upsert_player_advanced(session, stat)
             season_count += 1
             if season_count % 500 == 0:
@@ -574,6 +653,8 @@ def ingest_season_averages(
     session: Session,
     seasons: Iterable[int],
     season_types: Sequence[str] | None = None,
+    *,
+    allowed_team_ids: set[int] | None = None,
 ) -> int:
     total = 0
     seasons = list(seasons)
@@ -596,6 +677,13 @@ def ingest_season_averages(
                         category=category,
                         stat_type=stat_type,
                     ):
+                        team_id = _to_int((payload.get("team") or {}).get("id"))
+                        if (
+                            allowed_team_ids
+                            and team_id is not None
+                            and team_id not in allowed_team_ids
+                        ):
+                            continue
                         _upsert_season_average(
                             session,
                             payload,
@@ -630,6 +718,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--end",
         type=str,
         help="End date (YYYY-MM-DD) used to infer NBA seasons",
+    )
+    parser.add_argument(
+        "--teams",
+        type=str,
+        help=(
+            "Comma separated team abbreviations or IDs to limit ingestion (e.g., "
+            "'DEN,GSW')."
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore ingestion_status checks and re-run seasons regardless of prior runs",
     )
     args = parser.parse_args(argv)
 
@@ -688,12 +789,15 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     with get_session(session_factory) as session:
         teams = ingest_teams(client, session)
+        allowed_team_ids = _allowed_team_ids(args.teams, teams)
         total_games = 0
         total_stats = 0
         total_advanced = 0
         total_season_avgs = 0
         for season in seasons:
-            if is_ingestion_complete(session, "balldontlie", season, "stats"):
+            if not args.force and is_ingestion_complete(
+                session, "balldontlie", season, "stats"
+            ):
                 log(
                     f"Season {season} already ingested for balldontlie stats, skipping."
                 )
@@ -702,12 +806,33 @@ def main(argv: Sequence[str] | None = None) -> None:
             log(f"Starting balldontlie ingestion for season {season}...")
             notify(f"🏀 Starting ingestion for season {season}...")
             try:
-                games = ingest_games(client, session, [season], postseason_flag)
-                stats = ingest_player_stats(client, session, [season], postseason_flag)
-                advanced = ingest_player_advanced(
-                    client, session, [season], postseason_flag
+                games = ingest_games(
+                    client,
+                    session,
+                    [season],
+                    postseason_flag,
+                    allowed_team_ids=allowed_team_ids,
                 )
-                season_avgs = ingest_season_averages(client, session, [season])
+                stats = ingest_player_stats(
+                    client,
+                    session,
+                    [season],
+                    postseason_flag,
+                    allowed_team_ids=allowed_team_ids,
+                )
+                advanced = ingest_player_advanced(
+                    client,
+                    session,
+                    [season],
+                    postseason_flag,
+                    allowed_team_ids=allowed_team_ids,
+                )
+                season_avgs = ingest_season_averages(
+                    client,
+                    session,
+                    [season],
+                    allowed_team_ids=allowed_team_ids,
+                )
                 session.commit()
                 mark_ingestion_complete(session, "balldontlie", season, "stats")
             except Exception as exc:
@@ -728,7 +853,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 f"{advanced} advanced stats ingested"
             )
         log(
-            f"Finished BallDontLie ingest: teams={teams}, games={total_games}, "
+            f"Finished BallDontLie ingest: teams={len(teams)}, games={total_games}, "
             f"box_rows={total_stats}, advanced_rows={total_advanced}, "
             f"season_average_rows={total_season_avgs}."
         )
