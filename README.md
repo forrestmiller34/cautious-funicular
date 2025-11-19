@@ -226,6 +226,9 @@ For Ball Don't Lie, you can pass an API key via `--balldontlie-api-key` or set e
 Providers covered:
 
 * `balldontlie` – uses `BALDONTLIE_API_KEY` / `BALLDONTLIE_API_KEY` (or `--balldontlie-api-key`)
+Providers covered:
+
+* `balldontlie` – uses `BALDONTLIE_API_KEY`
 * `odds_api` – uses `ODDS_API_KEY` (and optional `ODDS_API_BASE_URL`)
 * `sgo` – uses `SPORTSGAMEODDS_API_KEY` (and optional `SGO_BASE_URL`)
 * `betsapi` – uses `BETSAPI_API_KEY` (and optional `BETSAPI_BASE_URL`)
