@@ -85,6 +85,12 @@ class BallDontLieClient:
         teams = list(self._paginate("/v1/teams", params))
         return teams
 
+    def list_players(self) -> List[Dict[str, object]]:
+        """Retrieve all players."""
+        params: Dict[str, object] = {"per_page": 100}
+        players = list(self._paginate("/v1/players", params))
+        return players
+
     def list_games_for_seasons(
         self, seasons: Iterable[int], postseason: Optional[bool] = None
     ) -> Iterator[Dict[str, object]]:
@@ -132,6 +138,38 @@ class BallDontLieClient:
         if postseason is not None:
             params["postseason"] = str(postseason).lower()
         yield from self._paginate("/v1/stats", params)
+
+    def list_stats_by_date_range(
+        self,
+        start_date: date,
+        end_date: date,
+        postseason: Optional[bool] = None,
+    ) -> List[Dict[str, object]]:
+        """Retrieve base player game stats between start_date and end_date inclusive."""
+        params: Dict[str, object] = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "per_page": 100,
+        }
+        if postseason is not None:
+            params["postseason"] = str(postseason).lower()
+        return list(self._paginate("/v1/stats", params))
+
+    def list_advanced_stats_by_date_range(
+        self,
+        start_date: date,
+        end_date: date,
+        postseason: Optional[bool] = None,
+    ) -> List[Dict[str, object]]:
+        """Retrieve advanced player game stats between start_date and end_date inclusive."""
+        params: Dict[str, object] = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "per_page": 100,
+        }
+        if postseason is not None:
+            params["postseason"] = str(postseason).lower()
+        return list(self._paginate("/v1/stats/advanced", params))
 
     def list_season_averages(
         self,

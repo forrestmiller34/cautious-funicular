@@ -111,15 +111,44 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> Path:
             writer.writerow(row)
     return path
 
-def _export_balldontlie(
+
+COVERAGE_COLUMNS: list[str] = [
+    "provider",
+    "dataset",  # games, stats, advanced_stats, season_averages, players, teams
+    "season",  # season number or empty
+    "season_type",  # regular/postseason or empty
+    "postseason",  # true/false or empty
+    "start_date",  # date range start (for games/stats)
+    "end_date",  # date range end (for games/stats)
+    "category",  # for season_averages (e.g., general)
+    "stat_type",  # for season_averages (e.g., base, advanced)
+    "row_count",
+    "extra",  # JSON string for any extra metadata
+]
+
+
+def _write_csv_with_columns(
+    rows: list[dict[str, object]],
+    path: Path,
+    fieldnames: list[str],
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return path
+
+
+def _export_balldontlie_games(
     start: date,
     end: date,
     *,
     output: Path,
     api_key: str | None = None,
 ) -> Path:
-    resolved_api_key = _balldontlie_api_key(api_key, required=True)
-    client = BallDontLieClient(resolved_api_key)
+    client = BallDontLieClient(_balldontlie_api_key(api_key, required=True))
 
     games = client.list_games_by_date_range(start, end)
     rows: list[dict[str, object]] = []
@@ -132,7 +161,7 @@ def _export_balldontlie(
                 "source_event_id": game.get("id"),
                 "internal_game_id": "",
                 "game_date": (game.get("date") or "")[:10],
-                "start_time": game.get("date"),
+                "start_time": game.get("datetime") or game.get("date"),
                 "season": game.get("season"),
                 "status": game.get("status"),
                 "home_team": home.get("full_name") or home.get("name"),
@@ -147,12 +176,183 @@ def _export_balldontlie(
                     {
                         "period": game.get("period"),
                         "postseason": game.get("postseason"),
+                        "home_team_score": game.get("home_team_score"),
+                        "visitor_team_score": game.get("visitor_team_score"),
                     }
                 ),
             }
         )
 
     return _write_csv(rows, output)
+
+
+def _export_balldontlie_coverage(
+    start: date,
+    end: date,
+    *,
+    output: Path,
+    api_key: str | None = None,
+) -> Path:
+    """Export coverage counts for BallDontLie datasets over the given date range and seasons.
+
+    Datasets covered:
+      - teams
+      - players
+      - games (date range)
+      - stats (base player game stats, date range)
+      - advanced_stats (advanced player game stats, date range)
+      - season_averages (per season, general/base and general/advanced for regular season)
+    """
+    client = BallDontLieClient(_balldontlie_api_key(api_key, required=True))
+
+    rows: list[dict[str, object]] = []
+    start_str = start.isoformat()
+    end_str = end.isoformat()
+
+    # 1) Teams (global)
+    teams = client.list_teams()
+    rows.append(
+        {
+            "provider": "balldontlie",
+            "dataset": "teams",
+            "season": "",
+            "season_type": "",
+            "postseason": "",
+            "start_date": "",
+            "end_date": "",
+            "category": "",
+            "stat_type": "",
+            "row_count": len(teams),
+            "extra": _json({}),
+        }
+    )
+
+    # 2) Players (global)
+    players = client.list_players()
+    rows.append(
+        {
+            "provider": "balldontlie",
+            "dataset": "players",
+            "season": "",
+            "season_type": "",
+            "postseason": "",
+            "start_date": "",
+            "end_date": "",
+            "category": "",
+            "stat_type": "",
+            "row_count": len(players),
+            "extra": _json({}),
+        }
+    )
+
+    # 3) Games in date range
+    games = client.list_games_by_date_range(start, end)
+    rows.append(
+        {
+            "provider": "balldontlie",
+            "dataset": "games",
+            "season": "",
+            "season_type": "",
+            "postseason": "",
+            "start_date": start_str,
+            "end_date": end_str,
+            "category": "",
+            "stat_type": "",
+            "row_count": len(games),
+            "extra": _json({}),
+        }
+    )
+
+    # 4) Base player game stats in date range
+    base_stats = client.list_stats_by_date_range(start, end, postseason=None)
+    rows.append(
+        {
+            "provider": "balldontlie",
+            "dataset": "stats",  # player game base stats
+            "season": "",
+            "season_type": "",
+            "postseason": "",
+            "start_date": start_str,
+            "end_date": end_str,
+            "category": "",
+            "stat_type": "base",
+            "row_count": len(base_stats),
+            "extra": _json({}),
+        }
+    )
+
+    # 5) Advanced player game stats in date range
+    advanced_stats = client.list_advanced_stats_by_date_range(start, end, postseason=None)
+    rows.append(
+        {
+            "provider": "balldontlie",
+            "dataset": "advanced_stats",  # player game advanced
+            "season": "",
+            "season_type": "",
+            "postseason": "",
+            "start_date": start_str,
+            "end_date": end_str,
+            "category": "",
+            "stat_type": "advanced",
+            "row_count": len(advanced_stats),
+            "extra": _json({}),
+        }
+    )
+
+    # 6) Season averages for each season overlapping the date range
+    seasons = sorted({start.year, end.year})
+    for season in seasons:
+        # General / base
+        sa_base = list(
+            client.list_season_averages(
+                season,
+                season_type="regular",
+                category="general",
+                stat_type="base",
+            )
+        )
+        rows.append(
+            {
+                "provider": "balldontlie",
+                "dataset": "season_averages",
+                "season": season,
+                "season_type": "regular",
+                "postseason": "false",
+                "start_date": "",
+                "end_date": "",
+                "category": "general",
+                "stat_type": "base",
+                "row_count": len(sa_base),
+                "extra": _json({}),
+            }
+        )
+
+        # General / advanced
+        sa_adv = list(
+            client.list_season_averages(
+                season,
+                season_type="regular",
+                category="general",
+                stat_type="advanced",
+            )
+        )
+        rows.append(
+            {
+                "provider": "balldontlie",
+                "dataset": "season_averages",
+                "season": season,
+                "season_type": "regular",
+                "postseason": "false",
+                "start_date": "",
+                "end_date": "",
+                "category": "general",
+                "stat_type": "advanced",
+                "row_count": len(sa_adv),
+                "extra": _json({}),
+            }
+        )
+
+    return _write_csv_with_columns(rows, output, COVERAGE_COLUMNS)
 
 
 def _export_odds_api(start: date, days: int, *, output: Path) -> Path:
@@ -346,6 +546,15 @@ def main(argv: Sequence[str] | None = None) -> None:
             "BALLDONTLIE_API_KEY)"
         ),
     )
+    parser.add_argument(
+        "--balldontlie-coverage",
+        action="store_true",
+        help=(
+            "When using --provider balldontlie, also write a coverage CSV showing "
+            "row counts for teams, players, games, stats, advanced_stats, and "
+            "season_averages over the requested date range."
+        ),
+    )
     args = parser.parse_args(argv)
 
     providers = (
@@ -367,14 +576,30 @@ def main(argv: Sequence[str] | None = None) -> None:
         path = Path(args.output) if args.output else default_path
 
         if provider == "balldontlie":
+            # 1) Always export the games CSV using the existing behavior.
             outputs.append(
-                _export_balldontlie(
+                _export_balldontlie_games(
                     args.start,
                     end_date,
                     output=path,
                     api_key=args.balldontlie_api_key,
                 )
             )
+
+            # 2) Optionally export coverage CSV if requested.
+            if args.balldontlie_coverage:
+                coverage_path = (
+                    Path("reports")
+                    / f"balldontlie_coverage_{args.start.isoformat()}_{end_date.isoformat()}.csv"
+                )
+                outputs.append(
+                    _export_balldontlie_coverage(
+                        args.start,
+                        end_date,
+                        output=coverage_path,
+                        api_key=args.balldontlie_api_key,
+                    )
+                )
         elif provider == "odds_api":
             outputs.append(_export_odds_api(args.start, args.days, output=path))
         elif provider == "sgo":
