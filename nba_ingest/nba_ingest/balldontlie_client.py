@@ -11,16 +11,20 @@ import requests
 class BallDontLieClient:
     BASE_URL = "https://api.balldontlie.io"
 
-    def __init__(self, api_key: str, base_url: Optional[str] = None, *, timeout: float = 30.0) -> None:
-        self.api_key = api_key
+    def __init__(
+        self, api_key: Optional[str] = None, base_url: Optional[str] = None, *, timeout: float = 30.0
+    ) -> None:
+        self.api_key = api_key or ""
         self.base_url = base_url or self.BASE_URL
         self.timeout = timeout
         self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": api_key,
+        headers = {
             "Accept": "application/json",
             "User-Agent": "nba-ingest/1.0",
-        })
+        }
+        if api_key:
+            headers["Authorization"] = api_key
+        self.session.headers.update(headers)
 
     def _request(self, method: str, path: str, params: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         url = f"{self.base_url}{path}"

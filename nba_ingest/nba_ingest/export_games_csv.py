@@ -44,6 +44,31 @@ def _require_env(var_name: str, default: str | None = None) -> str:
     return value
 
 
+def _balldontlie_api_key(cli_value: str | None = None, *, required: bool = False) -> str | None:
+    """Retrieve a Ball Don't Lie API key from CLI args or either env var spelling.
+
+    Accepts both ``BALDONTLIE_API_KEY`` (existing project default) and
+    ``BALLDONTLIE_API_KEY`` to avoid typos. Raises a descriptive error when
+    ``required`` is ``True`` and no key is available.
+    """
+
+    if cli_value:
+        return cli_value
+
+    for env_name in ("BALDONTLIE_API_KEY", "BALLDONTLIE_API_KEY"):
+        api_key = os.environ.get(env_name)
+        if api_key:
+            return api_key
+
+    if required:
+        raise RuntimeError(
+            "Missing Ball Don't Lie API key. Set BALDONTLIE_API_KEY (or BALLDONTLIE_API_KEY) "
+            "or pass --balldontlie-api-key."
+        )
+
+    return None
+
+
 def _parse_date(raw: str) -> date:
     try:
         return datetime.strptime(raw, "%Y-%m-%d").date()
@@ -87,6 +112,10 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> Path:
     return path
 
 
+def _export_balldontlie(
+    start: date, end: date, *, output: Path, api_key: str | None = None
+) -> Path:
+    client = BallDontLieClient(_balldontlie_api_key(api_key, required=True))
 def _export_balldontlie(start: date, end: date, *, output: Path) -> Path:
     api_key = _require_env("BALLDONTLIE_API_KEY")
     client = BallDontLieClient(api_key)
@@ -301,6 +330,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=str,
         help="Output CSV path (only valid when a single provider is selected)",
     )
+    parser.add_argument(
+        "--balldontlie-api-key",
+        dest="balldontlie_api_key",
+        help=(
+            "Optional Ball Don't Lie API key override (otherwise uses BALDONTLIE_API_KEY or "
+            "BALLDONTLIE_API_KEY)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     providers = (
@@ -318,6 +355,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         default_path = Path("reports") / f"{provider}_games_{args.start.isoformat()}_{end_date.isoformat()}.csv"
         path = Path(args.output) if args.output else default_path
         if provider == "balldontlie":
+            outputs.append(
+                _export_balldontlie(
+                    args.start, end_date, output=path, api_key=args.balldontlie_api_key
+                )
+            )
             outputs.append(_export_balldontlie(args.start, end_date, output=path))
         elif provider == "odds_api":
             outputs.append(_export_odds_api(args.start, args.days, output=path))

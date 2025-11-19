@@ -79,9 +79,10 @@ Typical `.env` values:
 
 DATABASE_URL=postgres://user:password@host:5432/dbname
 
-# Ball Don't Lie / nba_api
+# Ball Don't Lie / nba_api (use either spelling)
 
-BALDONTLIE_API_KEY=your_bdl_key_here
+# Primary: BALDONTLIE_API_KEY=your_bdl_key_here
+# Alternate: BALLDONTLIE_API_KEY=your_bdl_key_here
 NBA_SEASONS=2021,2022,2023,2024
 
 # SportsGameOdds (player props < 2023-05-03)
@@ -219,6 +220,12 @@ python -m nba_ingest.export_games_csv --start 2024-10-01 --days 7
 python -m nba_ingest.export_games_csv --provider balldontlie --start 2024-10-01 --days 7 --output /tmp/bdl_week.csv
 ```
 
+For Ball Don't Lie, you can pass an API key via `--balldontlie-api-key` or set either
+`BALDONTLIE_API_KEY` (existing default) or `BALLDONTLIE_API_KEY` in your environment.
+
+Providers covered:
+
+* `balldontlie` – uses `BALDONTLIE_API_KEY` / `BALLDONTLIE_API_KEY` (or `--balldontlie-api-key`)
 Providers covered:
 
 * `balldontlie` – uses `BALDONTLIE_API_KEY`
