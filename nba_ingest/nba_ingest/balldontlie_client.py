@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence
 
 import requests
@@ -10,16 +11,20 @@ import requests
 class BallDontLieClient:
     BASE_URL = "https://api.balldontlie.io"
 
-    def __init__(self, api_key: str, base_url: Optional[str] = None, *, timeout: float = 30.0) -> None:
-        self.api_key = api_key
+    def __init__(
+        self, api_key: Optional[str] = None, base_url: Optional[str] = None, *, timeout: float = 30.0
+    ) -> None:
+        self.api_key = api_key or ""
         self.base_url = base_url or self.BASE_URL
         self.timeout = timeout
         self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": api_key,
+        headers = {
             "Accept": "application/json",
             "User-Agent": "nba-ingest/1.0",
-        })
+        }
+        if api_key:
+            headers["Authorization"] = api_key
+        self.session.headers.update(headers)
 
     def _request(self, method: str, path: str, params: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         url = f"{self.base_url}{path}"
@@ -91,6 +96,18 @@ class BallDontLieClient:
         if postseason is not None:
             params["postseason"] = str(postseason).lower()
         yield from self._paginate("/v1/games", params)
+
+    def list_games_by_date_range(
+        self, start_date: date, end_date: date
+    ) -> List[Dict[str, object]]:
+        """Retrieve games between ``start_date`` and ``end_date`` inclusive."""
+
+        params: Dict[str, object] = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "per_page": 100,
+        }
+        return list(self._paginate("/v1/games", params))
 
     def list_advanced_stats_for_seasons(
         self, seasons: Iterable[int], postseason: Optional[bool] = None

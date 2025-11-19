@@ -35,6 +35,16 @@ def _require_env(key: str) -> str:
     return value
 
 
+def _balldontlie_api_key() -> str:
+    for env_name in ("BALDONTLIE_API_KEY", "BALLDONTLIE_API_KEY"):
+        value = os.environ.get(env_name)
+        if value:
+            return value
+    raise RuntimeError(
+        "Missing BALDONTLIE_API_KEY environment variable (BALLDONTLIE_API_KEY is also accepted)."
+    )
+
+
 def _default_seasons(num_seasons: int = 4) -> List[int]:
     current_year = datetime.utcnow().year
     # NBA seasons span two calendar years, but API expects the starting year.
@@ -46,7 +56,7 @@ def load_settings() -> Settings:
 
     load_dotenv()
 
-    api_key = _require_env("BALDONTLIE_API_KEY")
+    api_key = _balldontlie_api_key()
     database_url = _require_env("DATABASE_URL")
 
     seasons_raw = os.environ.get("NBA_SEASONS")
