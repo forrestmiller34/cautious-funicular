@@ -113,6 +113,14 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> Path:
 
 
 def _export_balldontlie(
+    start: date,
+    end: date,
+    *,
+    output: Path,
+    api_key: str | None = None,
+) -> Path:
+    resolved_api_key = _balldontlie_api_key(api_key, required=True)
+    client = BallDontLieClient(resolved_api_key)
     start: date, end: date, *, output: Path, api_key: str | None = None
 ) -> Path:
     client = BallDontLieClient(_balldontlie_api_key(api_key, required=True))
@@ -141,6 +149,9 @@ def _export_balldontlie(start: date, end: date, *, output: Path) -> Path:
                 "away_abbr": (away.get("abbreviation") or "").upper(),
                 "away_provider_id": away.get("id"),
                 "away_provider_ids": "",
+                "extra": _json(
+                    {"period": game.get("period"), "postseason": game.get("postseason")}
+                ),
                 "extra": _json({"period": game.get("period"), "postseason": game.get("postseason")}),
             }
         )
@@ -357,6 +368,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         if provider == "balldontlie":
             outputs.append(
                 _export_balldontlie(
+                    args.start,
+                    end_date,
+                    output=path,
+                    api_key=args.balldontlie_api_key,
+                )
+            )
                     args.start, end_date, output=path, api_key=args.balldontlie_api_key
                 )
             )
