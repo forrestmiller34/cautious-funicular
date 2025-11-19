@@ -834,7 +834,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                     allowed_team_ids=allowed_team_ids,
                 )
                 session.commit()
-                mark_ingestion_complete(session, "balldontlie", season, "stats")
+                if allowed_team_ids:
+                    log(
+                        "Team filter in use; not marking season %s as fully ingested.",
+                        season,
+                    )
+                else:
+                    mark_ingestion_complete(session, "balldontlie", season, "stats")
             except Exception as exc:
                 session.rollback()
                 log(f"Error ingesting season {season}: {exc}")
