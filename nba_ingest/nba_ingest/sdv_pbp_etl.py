@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import datetime
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from dotenv import load_dotenv
-from sqlalchemy import MetaData, Table, func, inspect, select
+from sqlalchemy import MetaData, Table, func, inspect, select, cast, String
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from .notifications import notify
 
 from .db import create_db_engine, create_session_factory, get_session
 from .models import Game, PlayByPlayEvent, Player, SdvGameMap, Team
@@ -456,24 +458,34 @@ def match_game_map(session: Session) -> int:
 def backfill_raw_game_ids(
     session: Session, raw_table: Table, columns: RawTableColumns
 ) -> int:
+    """
+    Backfill the internal_game_id column on the raw SDV table using sdv_game_map.
+
+    Handles type mismatches between sdv_game_map.sdv_game_id (TEXT) and the raw
+    sdv_game_id column (often an INTEGER) by casting the raw value to TEXT.
+    """
+    # Cast the raw table's SDV game id column to String so we can safely compare
+    raw_sdv_game_id_as_text = cast(raw_table.c[columns.sdv_game_id], String)
+
     subquery = (
         select(SdvGameMap.internal_game_id)
         .where(
-            SdvGameMap.sdv_game_id == raw_table.c[columns.sdv_game_id],
+            SdvGameMap.sdv_game_id == raw_sdv_game_id_as_text,
             SdvGameMap.matched.is_(True),
         )
         .scalar_subquery()
     )
+
     stmt = (
         raw_table.update()
         .where(raw_table.c[columns.internal_game_id].is_(None))
         .values({columns.internal_game_id: subquery})
     )
+
     result = session.execute(stmt)
     rows = result.rowcount or 0
     log(f"Updated game_id for {rows} raw rows in {raw_table.name}")
     return rows
-
 
 def _to_int(value) -> int | None:
     try:
@@ -507,22 +519,49 @@ def _resolve_player(session: Session, player_id: str | int | None) -> int | None
 def _row_value(row: Mapping[str, object], key: str | None):
     return row.get(key) if key else None
 
+def _serialize_raw_row(row: Mapping[str, object]) -> dict[str, object]:
+    """
+    Convert a SQLAlchemy row mapping into a JSON-serializable dict
+    for storage in the raw_json JSONB column.
+    """
+    import datetime
+
+    out: dict[str, object] = {}
+    for k, v in row.items():
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    return out
 
 def etl_play_by_play(
     session: Session, raw_table: Table, columns: RawTableColumns, limit: int | None
 ) -> int:
+    """
+    ETL SDV raw play-by-play rows into the canonical play_by_play table.
+
+    - Reads from the raw SDV table (only rows with internal_game_id set)
+    - Normalizes fields and resolves team/player IDs
+    - De-duplicates on (game_id, event_num) within this ETL run
+    - Inserts/updates in small batches to avoid driver/DB limits
+    """
+    # Pull raw rows that have been mapped to an internal game id
     stmt = select(raw_table).where(raw_table.c[columns.internal_game_id].is_not(None))
     if limit:
         stmt = stmt.limit(limit)
     rows = session.execute(stmt).mappings()
 
-    payloads: list[dict] = []
+    # De-duplicate by (game_id, event_num) so ON CONFLICT doesn't hit the same
+    # row twice within a single statement
+    payloads_by_key: dict[tuple[int, int], dict] = {}
+
     for row in rows:
         event_num = _to_int(_row_value(row, columns.event_num))
         game_id = _to_int(_row_value(row, columns.internal_game_id))
         if event_num is None or game_id is None:
             continue
-        payload = {
+
+        payload: dict[str, object] = {
             "game_id": game_id,
             "event_num": event_num,
             "period": _to_int(_row_value(row, columns.period)),
@@ -533,47 +572,79 @@ def etl_play_by_play(
             "description": _row_value(row, columns.description),
             "home_score": _to_int(_row_value(row, columns.home_score)),
             "away_score": _to_int(_row_value(row, columns.away_score)),
-            "raw_json": dict(row),
+            "raw_json": _serialize_raw_row(row),
         }
+
+        # Resolve team_id (prefer explicit team_id, fall back to abbrev)
         team_code = _row_value(row, columns.team_abbrev)
         team_id = _row_value(row, columns.team_id)
-        payload["team_id"] = (
-            _resolve_team_id(session, str(team_id))
-            if team_id
-            else _resolve_team_id(session, str(team_code) if team_code else None)
+        if team_id is not None:
+            payload["team_id"] = _resolve_team_id(session, str(team_id))
+        else:
+            payload["team_id"] = _resolve_team_id(
+                session, str(team_code) if team_code else None
+            )
+
+        # Resolve up to 3 player IDs directly from the *_id columns
+        payload["player1_id"] = _resolve_player(
+            session, _row_value(row, columns.player1_id)
+        )
+        payload["player2_id"] = _resolve_player(
+            session, _row_value(row, columns.player2_id)
+        )
+        payload["player3_id"] = _resolve_player(
+            session, _row_value(row, columns.player3_id)
         )
 
-        payload["player1_id"] = _resolve_player(session, _row_value(row, columns.player1_id))
-        payload["player2_id"] = _resolve_player(session, _row_value(row, columns.player2_id))
-        payload["player3_id"] = _resolve_player(session, _row_value(row, columns.player3_id))
+        # Use (game_id, event_num) as the de-duplication key
+        key = (game_id, event_num)
+        # If there are duplicates in the raw data, the last one wins here.
+        payloads_by_key[key] = payload
 
-        payloads.append(payload)
+    payloads = list(payloads_by_key.values())
 
     if not payloads:
         log("No play-by-play rows ready for insertion")
         return 0
 
-    stmt = insert(PlayByPlayEvent).values(payloads)
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_pbp_game_event",
-        set_={
-            "period": stmt.excluded.period,
-            "clock": stmt.excluded.clock,
-            "event_type": stmt.excluded.event_type,
-            "description": stmt.excluded.description,
-            "team_id": stmt.excluded.team_id,
-            "player1_id": stmt.excluded.player1_id,
-            "player2_id": stmt.excluded.player2_id,
-            "player3_id": stmt.excluded.player3_id,
-            "home_score": stmt.excluded.home_score,
-            "away_score": stmt.excluded.away_score,
-            "raw_json": stmt.excluded.raw_json,
-        },
-    )
-    result = session.execute(stmt)
-    rows = result.rowcount or len(payloads)
-    log(f"Upserted {rows} play_by_play rows from {raw_table.name}")
-    return rows
+    # Insert in small batches so we don't hit parameter / statement size limits
+    # and ensure no command hits the same ON CONFLICT target twice.
+    BATCH_SIZE = 500
+    total_rows = 0
+
+    for start in range(0, len(payloads), BATCH_SIZE):
+        batch = payloads[start : start + BATCH_SIZE]
+
+        stmt = insert(PlayByPlayEvent).values(batch)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_pbp_game_event",
+            set_={
+                "period": stmt.excluded.period,
+                "clock": stmt.excluded.clock,
+                "event_type": stmt.excluded.event_type,
+                "description": stmt.excluded.description,
+                "team_id": stmt.excluded.team_id,
+                "player1_id": stmt.excluded.player1_id,
+                "player2_id": stmt.excluded.player2_id,
+                "player3_id": stmt.excluded.player3_id,
+                "home_score": stmt.excluded.home_score,
+                "away_score": stmt.excluded.away_score,
+                "raw_json": stmt.excluded.raw_json,
+            },
+        )
+
+        result = session.execute(stmt)
+        # rowcount may be -1 depending on driver; fall back to len(batch)
+        batch_rows = (
+            result.rowcount
+            if result.rowcount is not None and result.rowcount >= 0
+            else len(batch)
+        )
+        total_rows += batch_rows
+
+    log(f"Upserted {total_rows} play_by_play rows from {raw_table.name}")
+    return total_rows
+
 
 
 def diagnose_unmatched(session: Session, output_file: str | None = None) -> None:
@@ -634,7 +705,9 @@ def main() -> None:
     subparsers.add_parser("populate-map", help="Populate sdv_game_map from the raw table")
     subparsers.add_parser("match-map", help="Match sdv_game_map rows to games")
 
-    diagnose_parser = subparsers.add_parser("diagnose", help="Show diagnostic info for unmatched games")
+    diagnose_parser = subparsers.add_parser(
+        "diagnose", help="Show diagnostic info for unmatched games"
+    )
     diagnose_parser.add_argument("--output", help="Output CSV file path for unmatched games")
 
     subparsers.add_parser(
@@ -646,29 +719,53 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Load DB URL (also loads .env via _load_database_url)
     database_url = _load_database_url()
-    engine = create_db_engine(database_url)
-    session_factory = create_session_factory(engine)
-    raw_table = load_raw_table(engine, args.source_table)
-    columns = detect_columns(raw_table)
 
-    if args.command == "inspect":
-        inspect_raw_table(engine, args.source_table)
-        return
+    # Let Discord know we started
+    notify(
+        f"🟢 SDV PBP ETL started: command={args.command}, "
+        f"table={args.source_table}, season={args.season}, limit={args.limit}"
+    )
 
-    with get_session(session_factory) as session:
-        if args.command == "populate-map":
-            populate_game_map(session, raw_table, columns, args.season)
-        elif args.command == "match-map":
-            match_game_map(session)
-        elif args.command == "diagnose":
-            diagnose_unmatched(session, args.output)
-        elif args.command == "backfill-game-ids":
-            backfill_raw_game_ids(session, raw_table, columns)
-        elif args.command == "etl":
-            etl_play_by_play(session, raw_table, columns, args.limit)
+    try:
+        engine = create_db_engine(database_url)
+        session_factory = create_session_factory(engine)
+        raw_table = load_raw_table(engine, args.source_table)
+        columns = detect_columns(raw_table)
+
+        if args.command == "inspect":
+            inspect_raw_table(engine, args.source_table)
         else:
-            parser.error("Unknown command")
+            with get_session(session_factory) as session:
+                if args.command == "populate-map":
+                    populate_game_map(session, raw_table, columns, args.season)
+                elif args.command == "match-map":
+                    match_game_map(session)
+                elif args.command == "diagnose":
+                    diagnose_unmatched(session, args.output)
+                elif args.command == "backfill-game-ids":
+                    backfill_raw_game_ids(session, raw_table, columns)
+                elif args.command == "etl":
+                    etl_play_by_play(session, raw_table, columns, args.limit)
+                else:
+                    parser.error("Unknown command")
+
+        # Success notification
+        notify(
+            f"✅ SDV PBP ETL finished: command={args.command}, "
+            f"table={args.source_table}"
+        )
+
+    except Exception as exc:
+        # Failure notification
+        notify(
+            f"❌ SDV PBP ETL FAILED: command={args.command}, "
+            f"table={args.source_table}, error={exc}"
+        )
+        raise
+
 
 
 if __name__ == "__main__":

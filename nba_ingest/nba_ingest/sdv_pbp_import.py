@@ -7,6 +7,7 @@ import re
 
 import pandas as pd
 from dotenv import load_dotenv
+from .notifications import notify
 
 from .db import create_db_engine
 
@@ -77,7 +78,15 @@ def main() -> None:
     args = parser.parse_args()
 
     table_name = args.table or _derive_table_name(args.file)
-    import_sdv_pbp(args.file, table_name)
+
+    notify(f"🟢 SDV PBP IMPORT started: {args.file} → {table_name}")
+    try:
+        import_sdv_pbp(args.file, table_name)
+        notify(f"✅ SDV PBP IMPORT finished: {args.file} → {table_name}")
+    except Exception as exc:
+        notify(f"❌ SDV PBP IMPORT FAILED for {args.file}: {exc}")
+        raise
+
 
 
 if __name__ == "__main__":
