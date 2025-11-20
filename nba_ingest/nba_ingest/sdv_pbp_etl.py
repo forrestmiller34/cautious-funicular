@@ -257,34 +257,42 @@ def _resolve_team_id(session: Session, team_code: str | None) -> int | None:
     - Empty / None values (returns None)
     - All-Star / non-NBA teams (returns None)
     - Short/alt codes via TEAM_ABBREV_ALIASES (e.g., GS -> GSW, UTAH -> UTA)
+    - Duplicate rows in `teams` by always picking a single row (lowest id)
     """
     if not team_code:
         return None
 
-    # Normalize and uppercase
+    # Normalize and uppercase the input code
     team_code_str = str(team_code).strip().upper()
     if not team_code_str:
         return None
 
-    # Skip obvious non-NBA / All-Star teams
+    # Skip obvious non-NBA / All-Star teams entirely
     if team_code_str in NON_NBA_TEAM_CODES:
         return None
 
     # Apply alias mapping (GS -> GSW, SA -> SAS, etc.)
     team_code_str = TEAM_ABBREV_ALIASES.get(team_code_str, team_code_str)
 
-    # First, try to match by Team.abbrev (case-insensitive)
-    team = session.execute(
-        select(Team.id).where(func.upper(Team.abbrev) == team_code_str)
-    ).scalar_one_or_none()
+    # 1) Try to match by Team.abbrev (case-insensitive)
+    abbrev_stmt = (
+        select(Team.id)
+        .where(func.upper(Team.abbrev) == team_code_str)
+        .order_by(Team.id)
+        .limit(1)  # ensure at most one row so scalar_one_or_none() can't blow up
+    )
+    team = session.execute(abbrev_stmt).scalar_one_or_none()
     if team is not None:
         return team
 
-    # Fallback: match by nba_team_id if we store that style of ID
-    return session.execute(
-        select(Team.id).where(Team.nba_team_id == team_code_str)
-    ).scalar_one_or_none()
-
+    # 2) Fallback: match by nba_team_id (also case-insensitive)
+    nba_id_stmt = (
+        select(Team.id)
+        .where(func.upper(Team.nba_team_id) == team_code_str)
+        .order_by(Team.id)
+        .limit(1)
+    )
+    return session.execute(nba_id_stmt).scalar_one_or_none()
 
 def match_game_map(session: Session) -> int:
     from datetime import timedelta
