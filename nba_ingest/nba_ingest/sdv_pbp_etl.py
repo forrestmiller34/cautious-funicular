@@ -15,6 +15,31 @@ from .db import create_db_engine, create_session_factory, get_session
 from .models import Game, PlayByPlayEvent, Player, SdvGameMap, Team
 from .normalization import canonicalize_player_name
 
+# Some SDV team codes differ from our Team.abbrev values.
+# Map SDV's short/alt codes to the abbrevs used in our `teams` table.
+TEAM_ABBREV_ALIASES: dict[str, str] = {
+    "GS": "GSW",   # Golden State Warriors
+    "SA": "SAS",   # San Antonio Spurs
+    "NO": "NOP",   # New Orleans Pelicans
+    "NY": "NYK",   # New York Knicks
+    "WSH": "WAS",  # Washington Wizards
+    "UTAH": "UTA", # Utah Jazz
+}
+
+# SDV codes for All-Star / non-NBA teams that don't exist in our `teams` table.
+# We can safely ignore these for betting / model purposes.
+NON_NBA_TEAM_CODES: set[str] = {
+    "CAN",  # Canada / exhibition
+    "KEN",  # Kentucky / college / exhibition
+    "LEB",  # Team LeBron
+    "GIA",  # Team Giannis
+    "DUR",  # Team Durant
+    "SHQ",  # Team Shaq
+    "CHK",  # Team Chuck
+    "EAST", # All-Star East
+    "WEST", # All-Star West
+}
+
 
 def log(message: str) -> None:
     """Lightweight stdout logging consistent with other ingest scripts."""
@@ -225,14 +250,37 @@ def populate_game_map(
 
 
 def _resolve_team_id(session: Session, team_code: str | None) -> int | None:
+    """
+    Resolve an SDV team code to our internal Team.id.
+
+    Handles:
+    - Empty / None values (returns None)
+    - All-Star / non-NBA teams (returns None)
+    - Short/alt codes via TEAM_ABBREV_ALIASES (e.g., GS -> GSW, UTAH -> UTA)
+    """
     if not team_code:
         return None
-    team_code_str = str(team_code).strip()
+
+    # Normalize and uppercase
+    team_code_str = str(team_code).strip().upper()
+    if not team_code_str:
+        return None
+
+    # Skip obvious non-NBA / All-Star teams
+    if team_code_str in NON_NBA_TEAM_CODES:
+        return None
+
+    # Apply alias mapping (GS -> GSW, SA -> SAS, etc.)
+    team_code_str = TEAM_ABBREV_ALIASES.get(team_code_str, team_code_str)
+
+    # First, try to match by Team.abbrev (case-insensitive)
     team = session.execute(
-        select(Team.id).where(func.upper(Team.abbrev) == func.upper(team_code_str))
+        select(Team.id).where(func.upper(Team.abbrev) == team_code_str)
     ).scalar_one_or_none()
-    if team:
+    if team is not None:
         return team
+
+    # Fallback: match by nba_team_id if we store that style of ID
     return session.execute(
         select(Team.id).where(Team.nba_team_id == team_code_str)
     ).scalar_one_or_none()
