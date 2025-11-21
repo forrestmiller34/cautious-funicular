@@ -8,7 +8,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -277,16 +277,24 @@ def discover_events(
     return discovered
 
 
-def _load_queue(session: Session, max_events: int) -> List[Checkpoint]:
+def _load_queue(
+    session: Session,
+    max_events: int,
+    start: date,
+    end: date,
+) -> List[Checkpoint]:
     stmt = (
         select(Checkpoint)
-        .where(Checkpoint.status.in_(["discovered", "error"]))
+        .where(
+            Checkpoint.status.in_(["discovered", "error"]),
+            Checkpoint.date >= start,
+            Checkpoint.date <= end,
+        )
         .order_by(Checkpoint.date, Checkpoint.provider_event_id)
     )
     if max_events:
         stmt = stmt.limit(max_events)
     return session.execute(stmt).scalars().all()
-
 
 def _mark_checkpoint(
     session: Session,
@@ -386,7 +394,7 @@ def _log_metrics(
 def _write_report(report_rows: List[Dict[str, object]]) -> Path:
     reports_dir = Path("reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     path = reports_dir / f"props_hybrid_ingest_{timestamp}.csv"
     if not report_rows:
         path.touch()
@@ -506,7 +514,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         session.add(run)
         session.flush()
         run_id = run.id
-
         discovered = discover_events(
             session,
             _daterange(start_date, end_date),
@@ -524,7 +531,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     processed_total = 0
 
     with get_session(session_factory) as session:
-        queue = _load_queue(session, global_max_events)
+        queue = _load_queue(session, global_max_events, start_date, end_date)
         LOGGER.info("Loaded %s checkpoints", len(queue))
         for checkpoint in queue:
             if checkpoint.provider == "SGO" and sgo_quota_stop:
@@ -609,7 +616,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
             if time.monotonic() >= next_log:
                 remaining = session.execute(
-                    select(func.count()).where(Checkpoint.status != "done")
+                    select(func.count()).where(
+                        Checkpoint.status != "done",
+                        Checkpoint.date >= start_date,
+                        Checkpoint.date <= end_date,
+                    )
                 ).scalar_one()
                 _log_metrics(
                     stats,

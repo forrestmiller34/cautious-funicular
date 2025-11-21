@@ -27,6 +27,7 @@ class TheOddsApiClient:
             raise ValueError("base_url is required")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.sport_key = "basketball_nba"
         self.timeout = timeout
         self._session = requests.Session()
         self._min_interval = 60.0 / max(reqs_per_min, 1)
@@ -92,7 +93,8 @@ class TheOddsApiClient:
 
     def list_historical_events_by_date(self, snapshot_iso: str) -> List[Dict[str, Any]]:
         params = {"apiKey": self.api_key, "date": snapshot_iso}
-        data = self._request("/sports/basketball_nba/events", params=params)
+        path = f"/historical/sports/{self.sport_key}/events"
+        data = self._request(path, params=params)
         if isinstance(data, list):
             return data
         return []
@@ -110,11 +112,10 @@ class TheOddsApiClient:
             "markets": ",".join(sorted(set(markets))),
             "date": snapshot_iso,
         }
-        path = f"/sports/basketball_nba/events/{event_id}/odds-history"
+        path = f"/historical/sports/{self.sport_key}/events/{event_id}/odds"
         data = self._request(path, params=params)
         if isinstance(data, list):
             return data
         return []
-
 
 __all__ = ["TheOddsApiClient"]
