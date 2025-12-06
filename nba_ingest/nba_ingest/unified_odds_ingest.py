@@ -195,10 +195,10 @@ class BetsApiClient(BaseClient):
     def list_events_for_date(self, target_date: date) -> list[dict]:
         params = {
             "token": self.api_key,
-            "sport_id": 3,  # NBA
-            "day": target_date.strftime("%Y-%m-%d"),
+            "sport_id": 18,  # Basketball
+            "day": target_date.strftime("%Y%m%d"),
         }
-        payload = self._request("GET", "/basketball/matches", params=params)
+        payload = self._request("GET", "/events/ended", params=params)
         return payload.get("results", [])
 
     def fetch_event_odds(self, event_id: str) -> dict:
